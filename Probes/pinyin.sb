@@ -1,0 +1,9 @@
+(version 1)
+(deny default)
+(allow process-exec process-fork sysctl-read)
+(allow file-read-metadata)
+(allow file-read* (literal "/"))
+(allow file-map-executable (subpath "/System") (subpath "/usr") (subpath (param "WORKER_ROOT")))
+(allow file-read* (subpath "/System") (subpath "/usr") (subpath "/Library/Apple") (subpath "/private/var/db") (subpath "/private/etc") (subpath "/dev"))
+(allow file-read* (subpath (param "WORKER_ROOT")))
+; 不允许个人 Library、用户词库、任何文件写入、网络或 XPC 服务连接。

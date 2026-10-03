@@ -1,0 +1,12 @@
+LocalPinyinLab — experimental personal macOS input method, 2026-10-03.
+Licensed GPL-3.0-or-later. See LICENSE.
+CandidateView layout and CandidatePanel placement are Swift adaptations informed by
+qingjian-team/qingjian, commit c08ae57cb88b6a4a46f4a5e9c1d6d11c5e69222e,
+https://github.com/qingjian-team/qingjian
+Upstream license: GNU GPL version 3 or later. Attribution: qingjian contributors.
+Read sources: apps/macos/src/candidates/theme.rs, view/mod.rs, view/matrix.rs,
+window.rs, and apps/macos/Info.plist. Adaptations use a standalone Swift implementation,
+a private Apple pinyin worker isolated from user dictionaries, and public Translation.
+No qingjian dictionaries, glossary, name/logo assets, Apple dictionaries or models
+are distributed in this project. Apple frameworks and assets remain system-owned.
+The synthetic PNG uses handwritten display samples; it is not an engine result.
