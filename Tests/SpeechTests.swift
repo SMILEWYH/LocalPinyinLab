@@ -31,13 +31,18 @@ struct SpeechTests {
         let pages = Array(repeating: hello, count: 9) + [account]
         precondition(EnglishSpeaker.selectedText(rows: pages, page: 1, highlighted: 0) == "Your account")
         precondition(EnglishSpeaker.selectedText(rows: [hello], page: 1, highlighted: 0) == nil)
-        for (flags, expected): (NSEvent.ModifierFlags, Bool) in [(.option, true), (.command, false), ([.option, .shift], false), ([], false)] {
+        for (key, flags, expected): (UInt16, NSEvent.ModifierFlags, Bool) in [
+            (15, [.control, .shift], true), (15, [.control], false),
+            (15, [.shift], false), (15, [.command, .shift], false),
+            (15, [.control, .shift, .option], false), (15, [], false),
+            (49, [.option], false), (49, [.control, .shift], false), (49, [], false)
+        ] {
             let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
-                timestamp: 0, windowNumber: 0, context: nil, characters: " ",
-                charactersIgnoringModifiers: " ", isARepeat: false, keyCode: 49)!
+                timestamp: 0, windowNumber: 0, context: nil, characters: key == 15 ? "R" : " ",
+                charactersIgnoringModifiers: key == 15 ? "r" : " ", isARepeat: false, keyCode: key)!
             precondition(EnglishSpeaker.matches(event) == expected)
         }
-        print("PASS: highlighted row/page mapping, pending/error/raw-pinyin rejection, exact Option+Space")
+        print("PASS: highlighted row/page mapping, pending/error/raw-pinyin rejection, exact Control+Shift+R; Space combinations excluded")
         guard let voice = EnglishSpeaker.installedVoice() else { fatalError("No installed Apple English voice") }
         print("Installed voice: \(voice.identifier), \(voice.language)")
         let synthesizer = AVSpeechSynthesizer()

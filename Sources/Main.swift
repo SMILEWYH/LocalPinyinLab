@@ -5,6 +5,7 @@ import InputMethodKit
 struct LocalPinyinApp {
     @MainActor static var server: IMKServer?
     @MainActor static var panel: CandidatePanel?
+    @MainActor static var instanceLock: SingleInstanceLock?
 
     @MainActor static func main() {
         let args = CommandLine.arguments
@@ -24,6 +25,18 @@ struct LocalPinyinApp {
         }
         let isDemo = args.contains("--demo") || args.contains("--snapshot")
         if !isDemo {
+            do {
+                let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("local.pinyinlab.inputmethod", isDirectory: true)
+                instanceLock = try SingleInstanceLock.acquire(in: directory)
+                guard instanceLock != nil else {
+                    NSLog("LocalPinyin lifecycle: another input service is already running")
+                    return
+                }
+            } catch {
+                NSLog("LocalPinyin lifecycle: cannot acquire input service lock")
+                exit(1)
+            }
             NSLog("LocalPinyin lifecycle: creating IMKServer")
             server = IMKServer(name: "local.pinyinlab.inputmethod_Connection", bundleIdentifier: "local.pinyinlab.inputmethod")
             guard server != nil else {

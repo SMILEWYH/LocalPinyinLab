@@ -16,7 +16,7 @@ final class EnglishSpeaker {
     }
 
     static func matches(_ event: NSEvent) -> Bool {
-        event.keyCode == 49 && event.modifierFlags.intersection([.command, .control, .option, .shift]) == .option
+        event.keyCode == 15 && event.modifierFlags.intersection([.command, .control, .option, .shift]) == [.control, .shift]
     }
 
     static func selectedText(rows: [Candidate], page: Int, highlighted: Int) -> String? {
