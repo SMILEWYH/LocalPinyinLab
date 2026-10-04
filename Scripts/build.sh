@@ -12,7 +12,7 @@ APP="$STAGING/LocalPinyin.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/Worker"
 cp Info.plist "$APP/Contents/Info.plist"
 ditto Resources "$APP/Contents/Resources"
-"$BIN_DIR/menu-icon" "$APP/Contents/Resources/LocalPinyin-menu.pdf"
+"$BIN_DIR/menu-icon" "$APP/Contents/Resources/LocalPinyin-menu.tiff"
 cp Worker/pinyin.sb "$APP/Contents/Resources/Worker/pinyin.sb"
 xcrun clang -target arm64-apple-macos26.0 -fobjc-arc -framework Foundation Worker/main.m -o "$APP/Contents/Resources/Worker/pinyin-worker"
 cp "$BIN_DIR/LocalPinyin" "$APP/Contents/MacOS/LocalPinyin"
@@ -20,6 +20,8 @@ xattr -cr "$APP"
 codesign --force --sign - "$APP/Contents/Resources/Worker/pinyin-worker"
 codesign --force --sign - "$APP"
 codesign --verify --deep --strict "$APP"
+# Remove the obsolete generated icon when updating an existing build bundle.
+rm -f build/LocalPinyin.app/Contents/Resources/LocalPinyin-menu.pdf
 ditto --norsrc --noextattr "$APP" build/LocalPinyin.app
 # Desktop file providers can attach Finder metadata to the destination bundle.
 xattr -cr build/LocalPinyin.app

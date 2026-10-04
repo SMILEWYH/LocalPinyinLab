@@ -1,2 +1,3 @@
-"local.pinyinlab.inputmethod.Hans" = "本地拼音";
-"CFBundleDisplayName" = "本地拼音实验版";
+"local.pinyinlab.inputmethod.Hans" = "中英拼音";
+"CFBundleDisplayName" = "中英拼音";
+"CFBundleName" = "中英拼音";

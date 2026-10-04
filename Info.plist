@@ -7,13 +7,13 @@
 	<key>CFBundleExecutable</key>
 	<string>LocalPinyin</string>
 	<key>CFBundleName</key>
-	<string>LocalPinyin</string>
+	<string>中英拼音</string>
 	<key>CFBundleDisplayName</key>
-	<string>本地拼音实验版</string>
+	<string>中英拼音</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleVersion</key>
-	<string>5</string>
+	<string>13</string>
 	<key>CFBundleShortVersionString</key>
 	<string>0.1.0</string>
 	<key>LSMinimumSystemVersion</key>
@@ -60,12 +60,19 @@
 				<false/>
 				<key>tsInputModeScriptKey</key>
 				<string>smSimpChinese</string>
+				<key>TISIconIsTemplate</key>
+				<true/>
+				<key>TISIconLabels</key>
+				<dict>
+					<key>Primary</key>
+					<string>中英</string>
+				</dict>
 				<key>tsInputModeMenuIconFileKey</key>
-				<string>LocalPinyin-menu.pdf</string>
+				<string>LocalPinyin-menu.tiff</string>
 				<key>tsInputModeAlternateMenuIconFileKey</key>
-				<string>LocalPinyin-menu.pdf</string>
+				<string>LocalPinyin-menu.tiff</string>
 				<key>tsInputModePaletteIconFileKey</key>
-				<string>LocalPinyin-menu.pdf</string>
+				<string>LocalPinyin-menu.tiff</string>
 			</dict>
 		</dict>
 		<key>tsVisibleInputModeOrderedArrayKey</key>
@@ -78,7 +85,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>tsInputMethodIconFileKey</key>
-	<string>LocalPinyin-menu.pdf</string>
+	<string>LocalPinyin-menu.tiff</string>
 	<key>TISIconIsTemplate</key>
 	<true/>
 </dict>
