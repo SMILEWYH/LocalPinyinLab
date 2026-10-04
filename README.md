@@ -1,69 +1,255 @@
 # 本地拼音 LocalPinyinLab
 
-自用 macOS 输入法实验项目，使用 Swift、AppKit 和 InputMethodKit。中文拼音候选来自本机 Apple CoreChineseEngine，英文译文来自已安装的 Apple Translation 模型；不包含第三方拼音词库或云端翻译服务。
+自用 macOS 双语输入法实验项目，使用 Swift、AppKit 和 InputMethodKit。提供中文拼音与英文直出两种模式：中文模式在白色竖排候选框中同时显示中文候选及英文译文，蓝底白字标记当前选中项。
 
-## 当前状态
+拼音候选来自本机 Apple CoreChineseEngine，翻译使用已安装的 Apple Translation 中英模型，英文朗读使用 Apple 本地英语声音。项目不包含第三方拼音词库、云端翻译服务或自行编写的词条翻译表。
 
-- 白底候选框，蓝底白字高亮，中文候选与英文译文同行显示。
-- 支持整句拼音、前缀候选、逐段选词与撤回；候选排序不保证与系统拼音相同。
-- 常驻沙盒 worker 预热，当前页异步翻译，过期响应丢弃，有界内存缓存。
-- 注册输入服务前获取进程锁，阻止系统自动启动与手动启动产生重复服务实例；锁不保存输入内容，进程退出时自动释放。
-- Control+Shift+R 使用已安装的 Apple 英语声音朗读当前高亮项的英文译文；已替换会干扰选词的 Option+Space。
-- **已撤销单一译法筛选**：完整保留 Apple Translation 的原始译文，包括必要的 `or`。
-- 回车直接提交拼音的改动与本次朗读快捷键更新已安装；回车行为仍待实体键盘验收。用户已实际确认 TextEdit 候选正常，Control+Shift+R 听到 Hello 且没有上屏。此前旧朗读键会触发选词，现已替换。本仓库不将此前输入会话故障的唯一根因标记为已查明。
+> 拼音部分依赖苹果私有 API，目前仅在开发机 macOS 27.0.1 上验证。使用苹果引擎不代表与系统“简体拼音”的候选、排序、学习和上下文行为完全一致；系统升级也可能使接口失效。当前版本适合个人实验，尚未完成多应用兼容性验收。
 
-## 构建
+## 功能与实际行为
 
-需要 Apple Silicon Mac、macOS 26+ 和 Xcode Command Line Tools。开发环境使用 Swift 6.4、macOS 27 SDK；Apple 私有拼音接口仅在开发机 macOS 27.0.1 上验证过。
+- **中文输入**：支持整句候选、前缀候选、逐段选词、撤回已选片段，以及每页最多 9 项的候选翻页。
+- **英文直出**：切换模式后，将按键交给宿主应用处理，不显示中文候选。
+- **双语候选**：中文候选先显示，当前页译文异步补充；翻译未完成不阻塞中文选词。
+- **英文朗读**：按 `Control + Shift + R` 朗读蓝色选中项已显示的英文译文，不提交中文，也不修改当前拼音。
+- **回车保留拼音**：有组合文字时，Return / 数字键盘 Enter 提交当前组合并关闭候选，不附加换行；没有组合时由宿主正常处理回车。
+- **首键响应优化**：预热并复用拼音 worker，查询在独立队列执行；过期查询与翻译不会覆盖新一轮输入。
+- **单实例保护**：正常输入服务在注册 IMK 连接前取得进程锁，避免系统自动启动与手动启动同时创建服务。
+
+### 翻译的对象是什么？
+
+输入、翻译和朗读按以下顺序处理：
+
+```text
+拼音 nihao
+  → 苹果拼音引擎生成候选「你好」「你号」等
+  → 分别把候选中文发送给 Apple Translation
+  → 显示「你好  Hello」「你号  Your account」等译文
+  → Control + Shift + R 朗读当前选中行的英文
+```
+
+译文示例来自此前验证，具体输出可能随系统模型变化。实现见 [InputController.swift](Sources/InputController.swift) 与 [AppleTranslator.swift](Sources/AppleTranslator.swift)。
+
+翻译输入是**每一行候选的中文内容**，不是原始拼音。逐段选词时，译文对应当前候选片段；翻译请求不额外携带文档前文或已经选好的中文片段。含汉字的候选才请求翻译，纯拼音与纯表情候选不请求翻译。
+
+**保留 Apple Translation 的原始译文。** 此前尝试的“自动挑选单一译法”、`白字 → Miswritten character` / `期 → Period` 等改写已撤销。因此译文可能包含 `or`、多个含义或音译；本项目不保证孤立词条的译法符合某个特定语境，也不在客户端拆分或替换译文。
+
+### 与系统简体拼音的区别
+
+本项目独立调用 `CoreChineseEngine.framework` 中的 `CIMMecabraEngine`，没有接管或复用系统简体拼音的完整输入会话。worker 禁用词频学习，不接入联系人、个人词库或附加词库，并在每次查询前后重置组合状态。
+
+开始一轮输入时，输入控制器会尝试读取光标前最多 128 个 UTF-16 单位的文字；后续查询结合已选中文片段，仍限制在该长度内。宿主不支持读取时使用空上下文。这属于有限的前文辅助，不能等同于系统输入法的全部上下文能力。
+
+此前实测 `pingying` 在本项目中首项为“平英”，系统简体拼音首项为“瓶赢”。现在可以先选择“瓶”，保留 `ying`，再选择“赢”，但**候选完整性、首项排序、个性化学习和原生功能全面一致仍未实现或验证**。无法映射到输入拼音前缀的引擎候选也会被过滤，以避免错误消耗拼音。
+
+## 环境要求
+
+| 项目 | 要求 / 已验证环境 |
+| --- | --- |
+| 架构 | Apple Silicon（arm64）；脚本未提供 Intel 或通用二进制构建 |
+| 部署目标 | 主程序声明 macOS 26.0+；不代表所有这些系统版本均已验证 |
+| 开发机 | macOS 27.0.1（26A434），arm64 |
+| 工具链 | 已验证 Apple Swift 6.4、macOS 27.0 SDK、Xcode Command Line Tools |
+| 翻译 | 已安装的简体中文 → 英语 Apple Translation 模型 |
+| 朗读 | 至少一个已安装的 Apple 英语声音 |
+| 脚本工具 | Bash、Python 3、`xcrun`、`codesign`、`sandbox-exec` |
+
+使用较新 SDK 构建：源码含 macOS 26.4+ 的 `.lowLatency` 翻译策略分支，旧 SDK 不一定能够编译。当前没有 Swift Package、Xcode 工程或第三方包依赖，直接通过脚本编译。
+
+[Info.plist](Info.plist) 当前版本为 `0.1.0`，构建号 `4`。程序仅做本机 ad-hoc 签名，没有 Developer ID 签名或公证。
+
+## 构建与翻译模型准备
+
+以下命令均在仓库根目录执行：
 
 ```sh
 bash Scripts/build.sh
-bash Scripts/check-synthetic.sh
-bash Scripts/check-speech.sh
-bash Scripts/check-single-instance.sh
-# 可选：性能、取消与故障恢复检查
-bash Scripts/check-performance.sh
 ```
 
-构建产物在 `build/LocalPinyin.app`，脚本不自动安装或注册输入源。部分检查要求本机已安装苹果中英翻译模型或英语声音。
+主产物为 `build/LocalPinyin.app`。脚本同时生成翻译探针、输入源诊断工具和候选 UI 预览工具，对 worker 与应用签名并验证。**构建不会安装、注册、启用或切换输入源。**
 
-准备苹果离线翻译模型：
+首次使用翻译前，可以构建并打开独立的模型准备工具：
 
 ```sh
 bash Scripts/build-translation-setup.sh
 open build/TranslationSetup.app
 ```
 
-模型下载由用户在系统提示中确认。运行 `build/translation-probe` 可检查已安装状态及固定合成词句的真实翻译。正常输入法不会主动下载模型。
+按照苹果系统提示准备中英文离线模型。首次准备可能需要下载；下载由用户在系统提示中确认。该工具只测试“你好、谢谢、学习”等固定合成文本。正常输入法只使用已安装模型，不自动触发模型下载。
 
-## 源码键位
+检查模型状态和真实翻译：
+
+```sh
+build/translation-probe
+```
+
+缺少模型时，探针会显示 `SKIP`，这不表示翻译测试通过。输入法中的中文候选仍可使用，英文栏会显示“未安装中英离线语言包”。
+
+## 安装、更新与卸载
+
+### 首次安装
+
+1. 构建完成后，将 `build/LocalPinyin.app` 复制到当前用户的 `~/Library/Input Methods/`。目录不存在时创建它，保留原有系统输入源。
+2. 在“系统设置 → 键盘 → 文字输入 → 编辑”中点击 `＋`，从“简体中文”添加“本地拼音”，点击“完成”。英文系统下名称为 `Local Pinyin`。
+3. 在 TextEdit 等测试应用中，从菜单栏选择“本地拼音”，确认能保持选中，再输入合成文本 `nihao`，检查候选与空格上屏。
+
+如果新安装的输入法尚未出现在添加列表中，可先保存文稿，再从苹果菜单退出当前 **macOS 用户会话**并重新登录。无需退出 Apple 账户或 iCloud。此前本机排障中，重新登录后还需要在文字输入设置里手动移除并重新添加“本地拼音”，才能保存为可选输入源。
+
+### 更新已安装版本
+
+1. 保留旧应用备份，先结束当前组合并切换到系统输入源。
+2. 退出旧的 `LocalPinyin` 输入服务，再替换 `~/Library/Input Methods/LocalPinyin.app`，避免运行中的旧版本继续占用输入连接。
+3. 让系统重新启动该服务并选回“本地拼音”；如需手动启动，只启动安装目录中的副本。
+4. 用合成文本重新检查候选、删除、选词和朗读。若宿主仍保留失效会话，保存文稿后重开宿主；必要时重新登录用户会话。
+
+不要同时从构建目录和安装目录启动正常输入服务。单实例锁会拒绝后启动的实例，因此只覆盖文件或启动成功并不能证明运行进程已经换成新版本。也不要通过删除仍被持有的锁文件来强制启动第二个实例。
+
+### 卸载
+
+切换到系统输入源，在文字输入设置中移除“本地拼音”，退出其进程，再删除安装目录中的 `LocalPinyin.app`。保留或删除源码不会影响其他输入法。上述流程不需要关闭 SIP、Gatekeeper 或系统隐私保护。
+
+## 键盘操作
 
 | 按键 | 行为 |
 | --- | --- |
-| 空格 | 选用蓝色高亮候选 |
-| 回车 / 数字键盘 Enter | 上屏当前组合文字并关闭候选，不额外换行；未选词时保留拼音，逐段选择后保留已选中文和剩余拼音 |
-| 1–9 | 选择当前页候选 |
-| 上下键 | 移动高亮 |
-| PageUp / PageDown | 翻页 |
-| 左键 | 撤回最近一次分段选择 |
-| Backspace / Esc | 删除 / 取消组合 |
-| Control+Shift+R | 朗读当前候选的就绪英文译文，不提交文字 |
-| Control+Shift+Space | 中文拼音与英文直出切换 |
+| 小写 `a`–`z`、`'` | 输入拼音；一轮组合的原始拼音总长度最多 128 个字符 |
+| 空格 | 选择蓝色高亮项；部分候选仅转换前缀，剩余拼音继续选词 |
+| `1`–`9` | 选择当前页对应候选 |
+| `↑` / `↓` | 移动高亮，跨越页边界时随之翻页 |
+| Page Up / Page Down | 切换候选页，选中该页首项 |
+| `←` | 撤回最近一次已选片段，恢复该片段的原始拼音 |
+| Backspace | 删除待转换拼音末字符；没有待转换拼音时尝试撤回上一片段 |
+| Esc | 取消当前组合，关闭候选 |
+| Return / 数字键盘 Enter | 提交当前可见组合，不额外插入换行 |
+| `Control + Shift + R` | 朗读当前选中项已就绪的英文译文，不上屏 |
+| `Control + Shift + Space` | 切换中文拼音 / 英文直出；切换前提交尚未结束的组合 |
 
-没有组合时回车交给宿主处理。朗读在更换候选、翻页、继续输入、提交或停用时停止。没有就绪译文时不朗读状态标签或原始拼音。TextEdit 的新朗读键实际出声且不误上屏已由用户确认；英文直出切换及回车的新行为仍需实体键盘验收。
+例如：`nihao` 尚未选词时按回车，上屏 `nihao`；`pingying` 已选“瓶”而剩余 `ying` 时按回车，上屏 `瓶ying`。没有组合时，回车和删除键交给宿主应用。
 
-## 安装与限制
+当前输入模式保存在输入控制器实例中，没有独立模式指示器或设置界面，不能假定所有应用始终共享同一模式。候选窗口仅支持键盘操作，鼠标点击选词尚未实现。
 
-首次安装时将构建的应用复制到当前用户的 `~/Library/Input Methods/`，再通过系统设置的键盘/文字输入界面添加“本地拼音”。保留原有系统输入源。更新已安装程序前保留备份，先切换到系统输入源，退出旧输入法进程后再替换应用，最后启动并选回本地拼音。不要同时手动启动多个副本；单实例锁会拒绝后到的服务进程。构建和进程启动成功不能代替实际宿主输入测试。
+### 朗读规则
 
-排障记录：曾出现其他应用可用、TextEdit/Codex 中候选和删除无响应。切换到系统输入源后重启本地拼音，用户已确认 TextEdit 候选及删除恢复；另一次更新中实际观察到两个服务进程，因此加入单实例保护。重复进程或旧输入会话失效可能相关，但尚未证明最初故障的唯一根因，Codex 仍需单独实测。
+- 使用 `AVSpeechSynthesizer`，优先选择已安装的美式英语 Samantha，其次其他 Apple 美式英语声音，再其次其他 Apple 英语声音；排除个人声音和趣味声音。
+- 朗读内容就是当前行显示的就绪英文译文。没有就绪译文时显示提示，不朗读拼音、加载提示或错误提示，也不会在翻译稍后完成时自动播放。
+- 继续输入、移动候选、翻页、提交或停用输入服务会停止朗读。再次按快捷键会重新播放，长按的重复按键被忽略。
+- 不使用麦克风，不录音，不自动下载声音；目前没有语速、音色选择界面。
+- 原来的 `Option + Space` 朗读键已停用；`Command + Space` 没有被本项目绑定。当前快捷键按键码识别，其他键盘布局尚未全面验证。
 
-2026-10-04 验证：新版本构建及严格签名检查通过；独立进程锁测试通过；对已安装程序额外启动一次，确认第二次启动在注册输入服务前退出，原进程保持不变。候选/逐段选词回归及合成语音测试通过。用户实体确认 TextEdit 中候选显示、Hello 朗读与不误上屏。
+## 源码结构与实现
 
-拼音接口属于苹果私有 API，系统升级可能导致不兼容。worker 仅允许读取必要系统资源，不读取个人词库或联系人，不写学习数据，不联网。上下文仅在内存中有界处理，提交或失焦后清除。没有持久键入记录。当前项目仍为实验版本，不承诺原生排序一致性、多宿主兼容性或稳定性；无需关闭 SIP、Gatekeeper 或隐私保护。
+```text
+Sources/       输入服务、组合状态、候选 UI、翻译、语音与进程管理
+Probes/        苹果拼音 worker、沙盒配置、模型准备与诊断工具
+Tests/         合成输入、事件逻辑、性能、故障恢复、语音与单实例测试
+Scripts/       构建和测试入口
+Resources/     中英文输入源名称
+Info.plist     输入源标识、IMK 连接与部署配置
+LICENSE        GPL 许可证正文
+NOTICE         上游参考与改编说明
+```
 
-本仓库包含源码、合成测试及构建资源，不包含本机运行日志、安装备份、个人测试文稿、缓存或已编译应用。
+| 文件 | 职责 |
+| --- | --- |
+| [Main.swift](Sources/Main.swift) | 主入口、运行时校验、IMKServer 生命周期、预热与演示模式 |
+| [InputController.swift](Sources/InputController.swift) | 按键分发、宿主 marked text、选词、异步请求、页内翻译与朗读协调 |
+| [CompositionState.swift](Sources/CompositionState.swift) | 已选中文与剩余拼音、逐段消费、撤回与删除 |
+| [Candidate.swift](Sources/Candidate.swift) | 候选数据、reading 到原始拼音的消费长度映射、有界上下文、单次诊断查询 |
+| [PinyinSession.swift](Sources/PinyinSession.swift) | 常驻 worker、匿名管道通信、取消、超时、一次重试与子进程清理 |
+| [PinyinProbe.m](Probes/PinyinProbe.m) / [pinyin.sb](Probes/pinyin.sb) | 私有引擎运行时签名校验、候选与 reading 提取、worker 沙盒 |
+| [AppleTranslator.swift](Sources/AppleTranslator.swift) | 已安装模型检查、批量翻译、结果映射、最多 256 条内存缓存 |
+| [EnglishSpeaker.swift](Sources/EnglishSpeaker.swift) | 朗读快捷键、当前候选定位、本地声音选择与播放 |
+| [CandidateView.swift](Sources/CandidateView.swift) / [CandidatePanel.swift](Sources/CandidatePanel.swift) | 白色竖排布局、蓝色高亮、光标附近的非激活窗口 |
+| [CandidateSnapshot.swift](Sources/CandidateSnapshot.swift) | 候选视图导出为 2 倍分辨率 PNG |
+| [SingleInstanceLock.swift](Sources/SingleInstanceLock.swift) | 在 IMK 注册前用 `flock` 排除重复服务实例 |
+| [InputSourceRegistration.swift](Sources/InputSourceRegistration.swift) | 输入源状态检查与显式注册工具 |
+
+正常输入使用预热的常驻 worker；独立演示及部分测试使用一次性查询进程。常驻查询的每次管道读取有 3 秒期限，失败后重启并重试一次；取消会跳过尚未执行的旧请求，已经执行的旧请求返回后丢弃结果。worker 退出或无响应时清理本项目创建的子进程。
+
+翻译只处理当前页含汉字的候选，去重后批量请求，使用请求标识对应响应。macOS 26.4+ 选择低延迟策略；缓存按最早存入顺序淘汰。输入代次、翻页和取消检查共同避免旧译文覆盖当前内容。
+
+## 测试与诊断
+
+先执行 `bash Scripts/build.sh`，再按需要运行：
+
+| 命令 | 验证范围 |
+| --- | --- |
+| `bash Scripts/check-synthetic.sh` | 真实苹果引擎的短词、长句、分隔符、前缀候选，以及逐段选择、撤回、删除和上下文长度 |
+| `build/translation-probe` | 模型状态、固定中文样本的真实翻译、缓存重复项和结果顺序 |
+| `bash Scripts/check-speech.sh` | 快捷键与高亮行映射、拒绝未就绪内容、本地语音合成为内存 PCM；不经扬声器播放 |
+| `bash Scripts/check-single-instance.sh` | 跨进程互斥及释放后重新取得锁 |
+| `bash Scripts/check-return-key.sh` | 实际 InputController 事件代码配合内存宿主，验证回车、无组合按键透传及迟到响应不会重新打开候选 |
+| `bash Scripts/check-performance.sh` | 常驻 / 单次查询对比、上下文重置、快速输入取消、子进程崩溃恢复及超时清理 |
+
+测试使用合成输入，不注册输入源或修改安装中的应用。语音与翻译测试依赖本机资源；私有引擎测试包含具体候选断言，系统升级导致输出变化时需要检查失败原因。回车测试替换了 IMK 宿主、查询和窗口边界，因此不能替代真实应用中的键盘验收。
+
+只读诊断示例：
+
+```sh
+build/LocalPinyin.app/Contents/MacOS/LocalPinyin --runtime-check
+build/LocalPinyin.app/Contents/MacOS/LocalPinyin --source-status
+build/inputsource-tool
+```
+
+`--runtime-check` 检查控制器类名及 bundle 标识；`--source-status` / 无参数的 `inputsource-tool` 读取输入源状态。TIS 返回已启用、已选中或状态码 0，不能证明某个应用中的实际输入正常。
+
+`--register` 以及 `inputsource-tool` 的 `register`、`enable`、`select-test`、`restore-original` 参数会修改输入源状态，不是只读诊断，也不作为常规安装步骤；其中 `restore-original` 实际选择的是固定的系统简体拼音标识，并非动态恢复任意先前输入源。
+
+不安装输入法也可以查看固定样本：
+
+```sh
+# 真实引擎候选；有模型时附带真实翻译。演示窗口不处理选词按键。
+build/LocalPinyin.app/Contents/MacOS/LocalPinyin --demo --long-sample
+# 导出 pingying 的候选图，不注册正常输入服务。
+build/LocalPinyin.app/Contents/MacOS/LocalPinyin --snapshot build/candidates.png --candidate-sample
+# 手写合成 UI 数据，仅用于布局预览，不是苹果引擎或翻译输出。
+build/candidate-preview build/candidate-preview-synthetic.png
+```
+
+## 已验证结果与待验证项
+
+以下是本次开发对话及已有测试的记录，不能代替在其他机器上的验收。
+
+| 项目 | 结果与边界 |
+| --- | --- |
+| TextEdit 短词 | 用户确认 `nihao` 显示中文与英文，空格上屏“你好” |
+| TextEdit 长句 | 用户确认 `xianzaibeijingshijianjidianzhong` 显示“现在北京时间几点钟”及译文，空格可上屏 |
+| 逐段选词 | 用户确认 `pingying` 可先选“瓶”，再从 `ying` 选“赢”，最终上屏“瓶赢” |
+| 首键速度 | 常驻 worker 优化后用户反馈明显更快，选词和上屏正常 |
+| 删除与候选恢复 | 重启服务后，用户确认 TextEdit 候选出现、删除正常 |
+| 新朗读快捷键 | 用户确认 TextEdit 中 `Control + Shift + R` 听到 Hello，候选正常，未把“你好”上屏 |
+| 构建与合成测试 | 已有记录中构建、严格签名、候选、分段、翻译、语音、单实例和故障恢复检查通过 |
+| 回车 | 已实现并安装；内存宿主事件测试通过，真实应用中的实体键盘行为仍待确认 |
+| 英文模式切换 | 代码已实现；用户曾暂缓专门验收，不能据此标记完整通过 |
+| Codex 与其他宿主 | Codex 曾发生输入会话故障，恢复后尚无单独确认；多应用、全屏、多屏和不同键盘布局仍待覆盖 |
+
+此前本机性能测量中，`p` / `n` / `nihao` 的单次启动查询约 116–123 ms，常驻查询约 1.8–3.8 ms。这是拼音查询耗时，**不包含完整的按键、UI 绘制、翻译和显示链路**，不是跨机器性能承诺。
+
+## 排障与已知限制
+
+**候选缺失或无法切换输入源**：先确认菜单栏实际选中“本地拼音”。如果只有字母正常直出，可能处于英文模式，可用模式快捷键切回；如果连输入或删除都无响应，应先切回系统输入源恢复编辑，再按更新流程重启本地服务及受影响宿主。
+
+曾出现其他软件可用，但 TextEdit / Codex 中候选、输入或删除无响应的情况。后续一次更新中观察到两个服务进程，已加入单实例保护；但这不足以证明原始故障只有这一个根因。服务启动成功、进程存活或 worker 查询成功都不能替代宿主实测。
+
+其他限制：
+
+- 私有 API 与 `sandbox-exec` 都存在系统版本兼容风险；引擎不可用时显示状态，不切换为第三方词库冒充苹果候选。
+- 未实现系统输入法的完整学习、模糊拼音设置、标点策略、组合内任意光标编辑或全部原生快捷键。
+- 译文为独立候选的机器翻译，不是完整词典释义、词性或经过人工校对的单一译法。
+- 候选窗口固定白色，不跟随深色外观；长译文暂不换行或截断，可能超出窄屏可用宽度。
+- 光标位置由宿主 IMK 接口提供；取不到位置时回退到鼠标位置，不保证所有输入框定位一致。
+
+## 数据与隐私边界
+
+- 正常输入的拼音、有限前文和候选通过匿名管道在本机进程间传递，不放入命令行参数，不由项目写入键入日志或历史文件。
+- **沙盒限制适用于拼音 worker**：允许读取配置中的系统资源及 worker 文件，不允许读取个人 Library、写入学习数据、联网或连接 XPC 服务。主输入服务及苹果 Translation / 语音服务不在这个 worker 沙盒内。
+- 主输入控制器通过公开 IMK 接口按需读取有限前文；提交或停用后清除组合及前文。启用安全输入时放弃处理按键。
+- 翻译缓存仅保存在控制器内存中，最多 256 条；不因每次提交立即清空，在淘汰或控制器释放后移除。项目不持久保存该缓存。
+- 正常服务仅输出固定生命周期诊断信息；命令行探针可以输出它们自身的合成样本。单实例锁文件位于 `~/Library/Caches/local.pinyinlab.inputmethod/input-service.lock`，不保存输入内容。
+- 仓库排除编译应用、构建缓存、运行日志、安装备份和个人测试文稿。苹果词库、翻译模型及声音由系统提供，不随源码分发。
 
 ## 许可与来源
 
-候选窗口的布局参考 [qingjian](https://github.com/qingjian-team/qingjian)，遵循 GPL-3.0-or-later，详见 [LICENSE](LICENSE) 和 [NOTICE](NOTICE)。未使用青简名称/logo，也未分发其词库。
+本项目采用 **GPL-3.0-or-later**，见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。候选窗口布局与定位参考 [qingjian-team/qingjian](https://github.com/qingjian-team/qingjian) 的 AppKit 实现，使用独立 Swift 实现并按本项目需求调整白色外观和双语行。
+
+参考版本为 `c08ae57cb88b6a4a46f4a5e9c1d6d11c5e69222e`，阅读的上游文件包括 `apps/macos/src/candidates/theme.rs`、`view/mod.rs`、`view/matrix.rs`、`window.rs` 以及 `apps/macos/Info.plist`。具体归属见 NOTICE。项目没有使用青简名称 / logo 素材，也没有分发其词库或苹果词库与模型。
