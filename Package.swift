@@ -20,6 +20,7 @@ let package = Package(
         .target(name: "PinyinInfrastructure", dependencies: ["PinyinCore", "PinyinApplication"]),
         .target(name: "PinyinPresentation", dependencies: ["PinyinCore", "PinyinApplication"]),
         .executableTarget(name: "LocalPinyin", dependencies: ["PinyinCore", "PinyinApplication", "PinyinInfrastructure", "PinyinPresentation"]),
+        .executableTarget(name: "punctuation-checks", dependencies: ["PinyinCore", "PinyinApplication"], path: "Tests/PunctuationChecks"),
         probe("inputsource-tool", file: "InputSourceTool.swift"),
         probe("menu-icon", file: "MenuIcon.swift"),
         probe("TranslationSetup", file: "TranslationSetup.swift")

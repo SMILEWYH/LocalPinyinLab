@@ -110,6 +110,17 @@ import PinyinCore
             translateVisiblePage()
             return true
         }
+        // An apostrophe inside raw pinyin separates syllables (xi'an).
+        // Elsewhere it is a quotation mark, just like the double-quote key.
+        if text != "'" || composition.pending.isEmpty {
+            let isQuote = text == "'" || text == "\""
+            let context = isQuote ? PinyinRules.boundedContext(nextHost.precedingContext()) : ""
+            guard host === nextHost, mode == .chinesePinyin else { return false }
+            if let punctuation = ChinesePunctuation.text(for: text, preceding: context) {
+                commit(suffix: punctuation)
+                return true
+            }
+        }
         if !text.isEmpty && text.unicodeScalars.allSatisfy({ (97...122).contains($0.value) || $0.value == 39 }) {
             let beginning = composition.isEmpty
             guard composition.append(text) else { return true }
@@ -252,9 +263,9 @@ import PinyinCore
 
     private func stopSpeech() { speaker.stop(); speechStatus = nil }
 
-    private func commit() {
-        guard !composition.isEmpty else { return }
-        let text = composition.markedText
+    private func commit(suffix: String = "") {
+        guard !composition.isEmpty || !suffix.isEmpty else { return }
+        let text = composition.markedText + suffix
         let previousHost = host
         // Invalidate before calling the host, which may synchronously trigger lifecycle callbacks.
         clear()

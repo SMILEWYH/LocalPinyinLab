@@ -77,6 +77,8 @@ SwiftPM 使用 Swift 6 语言模式与明确的访问级别。应用的所有会
 
 `Main` 管理启动选项、单实例锁与输入服务生命周期。
 
+中文标点由 Core 的 `ChinesePunctuation` 映射，`InputSession` 仅在中文模式且没有 Control、Option、Command 修饰键时应用。引号按光标前文决定开闭，不保存跨文档的配对开关；正在输入拼音时的单引号仍是音节分隔符。组合内容与标点在清空状态、取消旧请求后一次性提交，保留原有未选词时提交原始拼音的行为，避免宿主回调重入导致重复提交或串入另一文档。
+
 ## 2. 必须保持的正确性约束
 
 ### 组合
@@ -163,6 +165,12 @@ bash Scripts/build.sh
 ```
 
 `Scripts/common.sh` 集中 SwiftPM 构建目录、arm64 架构和配置，默认 release；可用 `CONFIGURATION=debug` 运行同一套脚本。app bundle 继续输出到 `build/LocalPinyin.app`，worker、资源复制、ad-hoc 签名和复制后的严格签名验证由 `build.sh` 完成。构建不会安装或修改当前输入源。
+
+标点行为的回归检查可在只有 Command Line Tools 的环境下运行：
+
+```sh
+swift run --scratch-path build/swift --configuration release --arch arm64 punctuation-checks
+```
 
 ## 6. 本次重构处理的缺陷
 
