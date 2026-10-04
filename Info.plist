@@ -13,7 +13,7 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleVersion</key>
-	<string>4</string>
+	<string>5</string>
 	<key>CFBundleShortVersionString</key>
 	<string>0.1.0</string>
 	<key>LSMinimumSystemVersion</key>
@@ -32,10 +32,11 @@
 	<string>local.pinyinlab.inputmethod</string>
 	<key>TISIntendedLanguage</key>
 	<string>zh-Hans</string>
+	<key>TICapsLockLanguageSwitchCapable</key>
+	<false/>
 	<key>tsInputMethodCharacterRepertoireKey</key>
 	<array>
 		<string>Hans</string>
-		<string>Latn</string>
 	</array>
 	<key>ComponentInputModeDict</key>
 	<dict>
@@ -50,16 +51,15 @@
 				<key>tsInputModeCharacterRepertoireKey</key>
 				<array>
 					<string>Hans</string>
-					<string>Latn</string>
 				</array>
 				<key>tsInputModeDefaultStateKey</key>
 				<true/>
 				<key>tsInputModeIsVisibleKey</key>
 				<true/>
 				<key>tsInputModePrimaryInScriptKey</key>
-				<true/>
+				<false/>
 				<key>tsInputModeScriptKey</key>
-				<string>smUnicodeScript</string>
+				<string>smSimpChinese</string>
 				<key>tsInputModeMenuIconFileKey</key>
 				<string>LocalPinyin-menu.pdf</string>
 				<key>tsInputModeAlternateMenuIconFileKey</key>

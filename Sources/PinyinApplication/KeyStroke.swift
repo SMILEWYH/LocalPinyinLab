@@ -13,15 +13,25 @@ public struct KeyStroke: Sendable {
     public let characters: String
     public let modifiers: KeyModifiers
     public let isRepeat: Bool
+    public let capsLock: Bool
 
-    public init(code: UInt16, characters: String = "", modifiers: KeyModifiers = [], isRepeat: Bool = false) {
+    public init(code: UInt16, characters: String = "", modifiers: KeyModifiers = [], isRepeat: Bool = false, capsLock: Bool = false) {
         self.code = code
         self.characters = characters
         self.modifiers = modifiers
         self.isRepeat = isRepeat
+        self.capsLock = capsLock
     }
 
     public var requestsSpeech: Bool { code == 15 && modifiers == [.control, .shift] }
     public var switchesMode: Bool { code == 49 && modifiers == [.control, .shift] }
     public var passesThrough: Bool { !modifiers.intersection([.control, .option, .command]).isEmpty }
+
+    /// Caps Lock selects our input mode; Shift still controls ASCII letter case.
+    /// Preserve shortcuts, non-ASCII text, dead keys, symbols and keyboard layout.
+    public var textIgnoringCapsLock: String {
+        guard capsLock, !passesThrough, !characters.isEmpty,
+              characters.unicodeScalars.allSatisfy({ (65...90).contains($0.value) || (97...122).contains($0.value) }) else { return characters }
+        return modifiers.contains(.shift) ? characters.uppercased() : characters.lowercased()
+    }
 }

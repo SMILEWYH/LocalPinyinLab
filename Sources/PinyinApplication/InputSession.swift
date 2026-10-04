@@ -4,7 +4,8 @@ import PinyinCore
 /// Owns one host's composition and async work, serialized on the main actor.
 /// Query/page tickets are invalidated before state changes, even if providers ignore cancellation.
 @MainActor public final class InputSession {
-    public private(set) var mode: InputMode = .chinesePinyin
+    public var mode: InputMode { modeState.mode }
+    private let modeState: InputModeState
     public private(set) var composition = CompositionState()
     public private(set) var candidates = CandidateList()
     private let provider: any CandidateProviding
@@ -21,30 +22,71 @@ import PinyinCore
     private var speechStatus: String?
 
     public init(provider: any CandidateProviding, translator: any CandidateTranslating,
-                speaker: any SpeechPlaying, presenter: any CandidatePresenting) {
+                speaker: any SpeechPlaying, presenter: any CandidatePresenting,
+                modeState: InputModeState = InputModeState()) {
         self.provider = provider
         self.translator = translator
         self.speaker = speaker
         self.presenter = presenter
+        self.modeState = modeState
     }
 
     deinit { queryTask?.cancel(); translationTask?.cancel() }
 
-    public func activate() { provider.warm() }
+    public func activate(capsLock: Bool? = nil) {
+        if let capsLock { modeState.synchronizeCapsLock(capsLock) }
+        provider.warm()
+    }
+
+    /// The OS can deliver the same modifier state more than once, including on
+    /// the next keyDown. Only the edge changes mode, before any host callback.
+    @discardableResult public func handleCapsLock(_ enabled: Bool, host nextHost: any InputHost) -> Bool {
+        guard bind(nextHost) else { return false }
+        return observeCapsLock(enabled)
+    }
+
+    private func observeCapsLock(_ enabled: Bool) -> Bool {
+        guard modeState.observeCapsLock(enabled) else { return false }
+        finishComposition()
+        return true
+    }
+
+    public func synchronizeCapsLock(_ enabled: Bool) { modeState.synchronizeCapsLock(enabled) }
+
+    /// Used for mouse clicks as well as mode changes. Does not discard the host.
+    public func finishComposition() {
+        if composition.isEmpty { clear() } else { commit() }
+    }
+
+    private func bind(_ nextHost: any InputHost) -> Bool {
+        if let host, host !== nextHost {
+            deactivate()
+            // Submission may synchronously activate another client and start a
+            // new composition. Do not move that text into this obsolete client.
+            guard self.host == nil else { return false }
+        }
+        host = nextHost
+        return true
+    }
 
     @discardableResult public func handle(_ key: KeyStroke, host nextHost: any InputHost) -> Bool {
-        if let host, host !== nextHost { deactivate() }
-        host = nextHost
+        guard bind(nextHost) else { return false }
+        _ = observeCapsLock(key.capsLock)
+        guard host === nextHost else { return false }
         if mode == .chinesePinyin, !composition.isEmpty, key.requestsSpeech {
             if !key.isRepeat { speakHighlighted() }
             return true
         }
         if key.switchesMode {
-            commit()
-            mode = mode == .chinesePinyin ? .englishDirect : .chinesePinyin
+            if !key.isRepeat {
+                modeState.toggle()
+                finishComposition()
+            }
             return true
         }
-        guard mode == .chinesePinyin, !key.passesThrough else { return false }
+        guard !key.passesThrough else { return false }
+        let text = key.textIgnoringCapsLock
+        if mode == .englishDirect { return forwardCorrectedText(text, original: key.characters, to: nextHost) }
         if key.code == 53 && !composition.isEmpty { cancel(); return true }
         if key.code == 51 && !composition.isEmpty { composition.backspace(); refresh(); return true }
         if key.code == 123 && composition.undoSelection() { refresh(); return true }
@@ -68,18 +110,31 @@ import PinyinCore
             translateVisiblePage()
             return true
         }
-        if !key.characters.isEmpty && key.characters.unicodeScalars.allSatisfy({ (97...122).contains($0.value) || $0.value == 39 }) {
+        if !text.isEmpty && text.unicodeScalars.allSatisfy({ (97...122).contains($0.value) || $0.value == 39 }) {
             let beginning = composition.isEmpty
-            guard composition.append(key.characters) else { return true }
+            guard composition.append(text) else { return true }
             if beginning { documentContext = PinyinRules.boundedContext(nextHost.precedingContext()) }
             refresh()
             return true
         }
         commit()
-        return false
+        guard host === nextHost else { return false }
+        return forwardCorrectedText(text, original: key.characters, to: nextHost)
     }
 
-    public func deactivate() { commit(); clear(); host = nil }
+    private func forwardCorrectedText(_ text: String, original: String, to host: any InputHost) -> Bool {
+        guard text != original else { return false }
+        host.commit(text)
+        return true
+    }
+
+    public func deactivate() {
+        let previousHost = host
+        let text = composition.isEmpty ? nil : composition.markedText
+        clear()
+        host = nil
+        if let text { previousHost?.commit(text) }
+    }
 
     /// Secure-input transitions discard composition and clear the host's marked text.
     public func cancel() {
@@ -200,9 +255,10 @@ import PinyinCore
     private func commit() {
         guard !composition.isEmpty else { return }
         let text = composition.markedText
+        let previousHost = host
         // Invalidate before calling the host, which may synchronously trigger lifecycle callbacks.
         clear()
-        host?.commit(text)
+        previousHost?.commit(text)
     }
 
     private func invalidateRequests() {
