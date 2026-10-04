@@ -28,7 +28,7 @@ public struct CompositionState: Sendable, Equatable {
     /// Selection consumes a nonempty prefix atomically and preserves its exact original spelling.
     @discardableResult
     public mutating func choose(_ candidate: Candidate) -> Bool {
-        guard !candidate.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        guard CandidateTextPolicy.allows(candidate.text),
               candidate.consumedCount > 0, candidate.consumedCount <= pending.count else { return false }
         let raw = String(pending.prefix(candidate.consumedCount))
         segments.append(Segment(text: candidate.text, pinyin: raw))

@@ -93,7 +93,31 @@ private func settle() async throws { try await Task.sleep(for: .milliseconds(10)
         try await obsoleteQueriesAndPageTranslations()
         try await lifecycleModeAndSpeech()
         try await cancellationReentryAndInvalidCandidates()
+        try await emojiFilteringKeepsSelectionAndFallbackCorrect()
         print("PASS: Return, queued selection, query/page races, speech, host lifecycle and mode regression cases")
+    }
+
+    @MainActor static func emojiFilteringKeepsSelectionAndFallbackCorrect() async throws {
+        let f = Fixture()
+        try await f.type("nihao")
+        try await f.resolve([Candidate(text: "👋", consumedCount: 5), Candidate(text: "你好", consumedCount: 5),
+                             Candidate(text: "你好👋", consumedCount: 5), Candidate(text: "你", consumedCount: 2)])
+        XCTAssertEqual(f.presenter.last?.rows.map(\.text), ["你好", "你"])
+        try await until { !f.translator.requests.isEmpty }
+        XCTAssertEqual(f.translator.requests.first?.sources, ["你好", "你"])
+        XCTAssertTrue(f.key(18, "1"))
+        XCTAssertEqual(f.host.inserted, ["你好"])
+        try await f.drain()
+
+        let empty = Fixture()
+        try await empty.type("nihao")
+        XCTAssertTrue(empty.key(49, " "))
+        empty.provider.complete([Candidate(text: "👋", consumedCount: 5)])
+        try await until { !empty.host.inserted.isEmpty }
+        XCTAssertEqual(empty.host.inserted, ["nihao"])
+        XCTAssertTrue(empty.translator.requests.isEmpty)
+        XCTAssertFalse(empty.presenter.visible)
+        try await empty.drain()
     }
 
     @MainActor static func cancellationReentryAndInvalidCandidates() async throws {

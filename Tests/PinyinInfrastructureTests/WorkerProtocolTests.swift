@@ -9,7 +9,7 @@ struct WorkerProtocolTests {
         let tests = WorkerProtocolTests()
         try tests.testInvalidInputIsRejectedBeforeStartingAWorker()
         try tests.testRequestPreservesPinyinAndBoundsContextByWholeCharacters()
-        try tests.testCandidatesPreserveOrderDuplicatesEmojiAndRawPrefixLengths()
+        try tests.testCandidatesFilterEmojiPreservingOrderDuplicatesAndRawPrefixLengths()
         try tests.testUnmappableAndEmptyCandidatesAreFiltered()
         try tests.testMalformedResponseAndReadinessHaveExplicitErrors()
         try tests.testResponseSizeLimitIncludesTheFinalPayloadByte()
@@ -40,11 +40,11 @@ struct WorkerProtocolTests {
         XCTAssertFalse(data.contains(10), "The transport adds the single newline frame terminator")
     }
 
-    func testCandidatesPreserveOrderDuplicatesEmojiAndRawPrefixLengths() throws {
+    func testCandidatesFilterEmojiPreservingOrderDuplicatesAndRawPrefixLengths() throws {
         let data = Data(#"[{"text":"西","reading":"xi"},{"text":"👋","reading":"xi'an"},{"text":"西","reading":"xi"}]"#.utf8)
         let candidates = try WorkerProtocol.decodeCandidates(data, pinyin: "xi'an")
-        XCTAssertEqual(candidates.map(\.text), ["西", "👋", "西"])
-        XCTAssertEqual(candidates.map(\.consumedCount), [3, 5, 3])
+        XCTAssertEqual(candidates.map(\.text), ["西", "西"])
+        XCTAssertEqual(candidates.map(\.consumedCount), [3, 3])
     }
 
     func testUnmappableAndEmptyCandidatesAreFiltered() throws {

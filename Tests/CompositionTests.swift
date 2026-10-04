@@ -41,14 +41,16 @@ struct CompositionTests {
         print("PASS: backspace edits unconverted suffix")
 
         let hello = try engine.candidates(for: "nihao")
-        precondition(hello.contains { $0.text == "👋" })
+        precondition(hello.contains { $0.text == "你好" })
+        precondition(!hello.contains { $0.text == "👋" })
+        precondition(hello.allSatisfy { CandidateTextPolicy.allows($0.text) })
         precondition(hello.first { $0.text == "你" }?.consumedCount == 2)
         precondition(PinyinRules.consumedCount(reading: "xi", in: "xi'an") == 3)
         precondition(PinyinRules.consumedCount(reading: "hao", in: "nihao") == nil)
         let before = state.markedText
         precondition(!state.choose(Candidate(text: "bad", consumedCount: 999)))
         precondition(state.markedText == before)
-        print("PASS: emoji retained, prefix coverage checked, malformed selection cannot lose text")
+        print("PASS: emoji excluded, Chinese retained, prefix coverage checked, malformed selection cannot lose text")
         let context = String(repeating: "中文👨‍👩‍👧‍👦e\u{301}", count: 50)
         let bounded = PinyinRules.boundedContext(context)
         precondition(bounded.utf16.count <= 128 && context.hasSuffix(bounded))

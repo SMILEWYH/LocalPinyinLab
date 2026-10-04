@@ -6,6 +6,7 @@ struct CoreTests {
     static func main() {
         let suite = CoreTests()
         suite.testInputAlphabetAndLimit()
+        suite.testCandidateTextRejectsEmojiAndPreservesOrdinaryText()
         suite.testAppendIsAtomicAndCountsSelectedRawInput()
         suite.testSegmentSelectionAndUndoPreserveSeparatorsAndSuffix()
         suite.testInvalidSelectionDoesNotMutateComposition()
@@ -18,7 +19,23 @@ struct CoreTests {
         suite.testTranslationUsesExpectedSourceBeforeApplying()
         suite.testTranslationStateControlsDisplayAndSpeechTogether()
         suite.testRawPinyinAndEmojiCannotBeSpokenEvenIfMarkedReady()
-        print("PASS: 13 PinyinCore invariant tests")
+        print("PASS: 14 PinyinCore invariant tests, including emoji-free candidate policy")
+    }
+
+    func testCandidateTextRejectsEmojiAndPreservesOrdinaryText() {
+        for text in ["👋", "👋\u{FE0E}", "😀\u{FE0E}", "👍🏽", "👨‍👩‍👧‍👦", "🇨🇳", "🏳️‍🌈", "1️⃣", "#️⃣", "*️⃣", "1\u{20E3}",
+                     "☺", "☹", "❤", "❣", "♥", "☀️", "©️", "👁‍🗨", "你好👋", "谢🙏谢"] {
+            XCTAssertFalse(CandidateTextPolicy.allows(text), text)
+        }
+        for text in ["你好", "𠮷野家", "𰻞", "字\u{E0100}", "nihao", "123", "#", "*", "©®™", "‼⁉",
+                     "，。！？+-=", "e\u{301}", "☀\u{FE0E}"] {
+            XCTAssertTrue(CandidateTextPolicy.allows(text), text)
+        }
+        var state = CompositionState()
+        state.append("nihao")
+        let before = state
+        XCTAssertFalse(state.choose(Candidate(text: "👋", consumedCount: 5)))
+        XCTAssertEqual(state, before)
     }
 
     func testInputAlphabetAndLimit() {

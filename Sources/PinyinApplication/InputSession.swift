@@ -126,7 +126,7 @@ import PinyinCore
         queryTask = nil
         // Providers are replaceable; invalid candidates must never consume or discard input.
         let valid = result.filter {
-            !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            CandidateTextPolicy.allows($0.text) &&
                 $0.consumedCount > 0 && $0.consumedCount <= query.count
         }
         let rows = valid.isEmpty

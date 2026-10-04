@@ -38,7 +38,7 @@ package enum WorkerProtocol {
             throw PinyinWorkerError.invalidResponse
         }
         return rows.compactMap { row in
-            guard !row.text.isEmpty,
+            guard CandidateTextPolicy.allows(row.text),
                   let consumed = PinyinRules.consumedCount(reading: row.reading, in: pinyin) else {
                 return nil
             }

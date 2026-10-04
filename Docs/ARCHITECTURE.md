@@ -33,11 +33,12 @@ SwiftPM 使用 Swift 6 语言模式与明确的访问级别。应用的所有会
 | --- | --- |
 | `PinyinRules.swift` | 输入字符集、统一长度限制、reading 前缀映射、上下文截断 |
 | `CompositionState.swift` | 精确原始拼音、已选片段、选择/撤回/删除的原子操作 |
+| `CandidateTextPolicy.swift` | 候选文本可用性；过滤表情及含表情的混合项，保留数字、普通符号及扩展汉字 |
 | `Candidate.swift` | 不可变候选文本与原始拼音消费长度，输入模式 |
 | `TranslationState.swift` | 候选展示行及互斥的翻译状态；可朗读内容判定 |
 | `CandidateList.swift` | 唯一的绝对选中索引、页切换与有界行更新 |
 
-`Candidate` 是外部引擎返回的数据值，构造本身不保证适用于某个组合。实际接纳分两层验证：worker 解码验证 reading 是当前输入前缀；输入会话再次拒绝空白文本及越界消费长度。最终 `CompositionState.choose` 再验证一次，失败不会修改状态。替换引擎时应遵守同样的前缀契约。
+`Candidate` 是外部引擎返回的数据值，构造本身不保证适用于某个组合。实际接纳分两层验证：worker 解码验证 reading 是当前输入前缀；输入会话再次拒绝空白文本、表情及越界消费长度。过滤发生在分页/翻译之前；整条候选移除，不裁剪文字或改变消费长度。最终 `CompositionState.choose` 再验证一次，失败不会修改状态。替换引擎时应遵守同样的前缀契约。
 
 `CandidateRow` 与候选分离：引擎无需理解翻译文案，窗口也不能修改引擎结果。翻译状态枚举消除了“错误文案 + ready=true”这类双字段矛盾；`.ready` 中的空白值即使由错误调用方构造，也无法进入朗读。
 
@@ -171,7 +172,7 @@ bash Scripts/check-performance.sh
 
 本机仅安装 Command Line Tools，没有 XCTest/Testing 框架。测试使用 SwiftPM 可执行目标和 `TestSupport` 的简单断言，失败立即以非零退出；其熟悉的 `XCTAssert...` 名称不表示使用 XCTest，也没有测试发现机制。新增用例必须加入对应 `@main` runner。`TestSupport` 不被生产模块依赖。
 
-- `PinyinCoreTests`：13 组输入、片段、分隔符、Unicode 上下文、翻译状态、分页与索引不变量。
+- `PinyinCoreTests`：14 组候选文本策略、输入、片段、分隔符、Unicode 上下文、翻译状态、分页与索引不变量。
 - `TranslationServiceTests`：15 组批次、FIFO、重复/缺失/未知响应、取消、缓存并发淘汰、纯空白拒绝与原文保留。
 - `InputSessionTests`：保留原回车用例并覆盖迟到查询/翻译、查询乱序、来回翻页、预先数字选择、服务失败、宿主切换、取消重入、模式和朗读。直接运行真实 InputSession，不改写源码或伪造 IMK 同名类。
 - `PinyinInfrastructureTests`：7 组请求验证、wire codec、候选顺序和消费、分帧及响应大小边界。
