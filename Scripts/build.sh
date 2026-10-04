@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(dirname "$0")/common.sh"
 swift build "${SWIFT_FLAGS[@]}"
 mkdir -p build
-for product in translation-probe candidate-preview inputsource-tool menu-icon libIMKCompileProbe.dylib; do
+for product in inputsource-tool menu-icon; do
     cp "$BIN_DIR/$product" "build/$product"
 done
 STAGING=$(mktemp -d "${TMPDIR:-/tmp}/localpinyin-build.XXXXXX")

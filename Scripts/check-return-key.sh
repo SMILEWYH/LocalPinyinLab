@@ -1,5 +1,0 @@
-#!/bin/bash
-set -euo pipefail
-source "$(dirname "$0")/common.sh"
-run_product InputSessionTests
-run_product PinyinPresentationTests

@@ -1,6 +1,6 @@
 # LocalPinyinLab 架构与状态约束
 
-本文对应 2026-10-04 的模块重构。功能和安装说明以 [README](../README.md) 为入口；模块依赖以 [Package.swift](../Package.swift) 为准。重构保留中文拼音、分段选词、英文直出、离线翻译、当前候选朗读及诊断命令。
+本文对应 2026-10-04 的模块重构。功能说明以 [README](../README.md) 为入口；模块依赖以 [Package.swift](../Package.swift) 为准。重构保留中文拼音、分段选词、英文直出、离线翻译、当前候选朗读及诊断命令。
 
 ## 1. 模块与依赖
 
@@ -44,7 +44,7 @@ SwiftPM 使用 Swift 6 语言模式与明确的访问级别。应用的所有会
 
 ### Application：行为协调与端口
 
-`InputSession` 拥有一个控制器会话的组合、候选列表、有限前文及异步请求。`InputModeState` 管理中英模式与 Caps Lock 按键基线，由本地服务的各控制器共享，测试可注入独立实例。激活仅同步基线，活动期间 Caps 状态边沿才切换模式；在调用宿主前完成模式更新和组合失效，避免重入导致重复切换或提交。`KeyStroke` 是无平台对象的按键值，保留物理键码和独立的 Caps 状态，不把 Caps 混入快捷键修饰符。`Ports.swift` 声明：
+`InputSession` 拥有一个控制器会话的组合、候选列表、有限前文及异步请求。`InputModeState` 管理中英模式与 Caps Lock 按键基线，由本地服务的各控制器共享。激活仅同步基线，活动期间 Caps 状态边沿才切换模式；在调用宿主前完成模式更新和组合失效，避免重入导致重复切换或提交。`KeyStroke` 是无平台对象的按键值，保留物理键码和独立的 Caps 状态，不把 Caps 混入快捷键修饰符。`Ports.swift` 声明：
 
 | 端口 | 约定 |
 | --- | --- |
@@ -71,11 +71,11 @@ SwiftPM 使用 Swift 6 语言模式与明确的访问级别。应用的所有会
 
 ### Presentation 与应用装配
 
-`CandidateView` 只绘制最多 9 行的当前页；越界页数据是调用错误，不通过内部截取掩盖。`CandidatePanel` 根据宿主提供的光标位置定位，取不到时回退鼠标位置。PNG 导出共用 `CandidateSnapshot`，预览不再复制绘制与编码代码。
+`CandidateView` 只绘制最多 9 行的当前页；越界页数据是调用错误，不通过内部截取掩盖。`CandidatePanel` 根据宿主提供的光标位置定位，取不到时回退鼠标位置。
 
 `LocalPinyin/InputController` 仅桥接 IMK 生命周期与 `NSEvent`。`IMKHost` 负责 IMK 的 UTF-16 范围和光标信息；`InputSession` 无需了解这些 API。Objective-C 的 IMK 回调没有完整 Swift actor 标注，适配边界使用 `MainActor.assumeIsolated` 明确要求系统在输入服务主线程回调，避免默默跨线程操作 UI。`nonisolated(unsafe)` 仅用于这几个同步回调中对控制器和 Objective-C 参数的局部借用，紧接运行时主执行器检查，不把这些对象发送给异步任务或其它队列。
 
-`Main` 保留启动选项、锁与服务生命周期；`DemoRunner` 单独处理合成输入的真实候选演示及快照。诊断和演示不注册正常输入服务。
+`Main` 管理启动选项、单实例锁与输入服务生命周期。
 
 ## 2. 必须保持的正确性约束
 
@@ -150,36 +150,19 @@ worker 的取消不打断正在进行的帧读取：排队请求在开始前检�
 | 替换或增加候选引擎 | 实现 `CandidateProviding`，在 InputController 装配 | 原顺序、有效前缀消费、取消后的结果隔离 |
 | 替换翻译实现 | 实现 `TranslationBackend` 复用 TranslationService，或直接实现 CandidateTranslating | 标识/完整性与源顺序，不自动将提示当译文 |
 | 修改候选界面 | 实现 CandidatePresenting，消费 CandidatePresentation | 不在视图修改组合或推断查询有效性 |
-| 替换宿主用于其他平台或测试 | 实现 InputHost，提供 KeyStroke | marked text/提交一致性，宿主切换生命周期 |
-| 增加快捷键 | 修改 KeyStroke 或 InputSession 的行为，再补事件映射/会话测试 | 不把宿主应处理的组合键吞掉 |
+| 替换宿主用于其他平台 | 实现 InputHost，提供 KeyStroke | marked text/提交一致性，宿主切换生命周期 |
+| 增加快捷键 | 修改 KeyStroke 或 InputSession 的行为及事件映射 | 不把宿主应处理的组合键吞掉 |
 | 增加语音设置 | 替换 SpeechPlaying 或配置 EnglishSpeaker | 仅朗读就绪译文，交互变化时停止播放 |
 
 目前没有实现插件加载、设置持久化或动态词库；本地中英模式仅在当前服务进程内跨应用共享，不影响其他输入源，重启后重置。接口提供扩展边界，不代表其他功能已经存在。9 项页长同时决定数字键选择和 UI 标号，修改时必须一起检查交互与界面，不能当作任意运行时配置。
 
-## 5. 构建、测试和验收边界
+## 5. 构建
 
 ```sh
 bash Scripts/build.sh
-bash Scripts/check-core.sh
-bash Scripts/check-synthetic.sh
-build/translation-probe
-bash Scripts/check-speech.sh
-bash Scripts/check-single-instance.sh
-bash Scripts/check-performance.sh
 ```
 
 `Scripts/common.sh` 集中 SwiftPM 构建目录、arm64 架构和配置，默认 release；可用 `CONFIGURATION=debug` 运行同一套脚本。app bundle 继续输出到 `build/LocalPinyin.app`，worker、资源复制、ad-hoc 签名和复制后的严格签名验证由 `build.sh` 完成。构建不会安装或修改当前输入源。
-
-本机仅安装 Command Line Tools，没有 XCTest/Testing 框架。测试使用 SwiftPM 可执行目标和 `TestSupport` 的简单断言，失败立即以非零退出；其熟悉的 `XCTAssert...` 名称不表示使用 XCTest，也没有测试发现机制。新增用例必须加入对应 `@main` runner。`TestSupport` 不被生产模块依赖。
-
-- `PinyinCoreTests`：14 组候选文本策略、输入、片段、分隔符、Unicode 上下文、翻译状态、分页与索引不变量。
-- `TranslationServiceTests`：15 组批次、FIFO、重复/缺失/未知响应、取消、缓存并发淘汰、纯空白拒绝与原文保留。
-- `InputSessionTests`：保留原回车用例并覆盖迟到查询/翻译、查询乱序、来回翻页、预先数字选择、服务失败、宿主切换、取消重入、模式和朗读。直接运行真实 InputSession，不改写源码或伪造 IMK 同名类。
-- `PinyinInfrastructureTests`：7 组请求验证、wire codec、候选顺序和消费、分帧及响应大小边界。
-- `PinyinPresentationTests`：真实 NSEvent 到无平台按键的映射、严格修饰键组合、重复按键传递。
-- 原有真实引擎、性能、故障恢复、语音 PCM 和跨进程锁测试仍通过独立脚本运行。
-
-纯测试不替代 IMK 在 TextEdit、Codex、全屏、多屏、安全输入及不同键盘布局下的实机验收。真实翻译和语音探针依赖已安装系统资源；模型缺失时 `SKIP` 不能记录成通过。性能数据只反映本机查询，不含完整 UI/翻译/宿主路径。
 
 ## 6. 本次重构处理的缺陷
 
@@ -190,12 +173,4 @@ bash Scripts/check-performance.sh
 5. 重复响应标识会令字典构造崩溃，缺失响应可能部分写缓存：整批验证后提交。
 6. 等待查询时选择不存在的第 9 项可能不显示有效结果：无效排队选择落回显示路径。
 7. 源文本、消费长度与翻译就绪状态缺乏约束：采用受控组合操作、唯一选中索引及翻译枚举。
-8. 取消时宿主可能同步请求提交旧组合：内部清理先于宿主回调，并增加重入测试。
-
-## 7. 本次验证记录（2026-10-04）
-
-上述核心、真实引擎、翻译、语音、单实例与性能/故障恢复检查均通过；release app 复制后严格签名、运行时控制器名称/bundle 标识及动态库依赖检查通过。产物只依赖系统框架/Swift 运行库，不依赖构建目录中的项目动态库。模型准备工具构建通过，未启动下载界面。
-
-真实候选与合成预览 PNG 已目视检查，布局保持正常。常驻 `p/n/nihao` 查询中位 1.35/1.36/3.33 ms；模拟无响应进程 7.10 秒完成重试回收。这些是本机查询测量，不是完整按键链路指标。
-
-结果不包含安装、输入源注册/切换或真实宿主实体键盘验收。本次保留已安装服务不变。详细结果摘要也记录在 README。
+8. 取消时宿主可能同步请求提交旧组合：内部清理先于宿主回调。

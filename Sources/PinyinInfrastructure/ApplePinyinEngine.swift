@@ -1,7 +1,7 @@
 import Foundation
 import PinyinCore
 
-/// An independent query session for command-line diagnostics and integration tests.
+/// An independent query session for command-line diagnostics.
 /// It shares the production transport's timeouts, frame limits and child cleanup.
 public struct ApplePinyinEngine: Sendable {
     public typealias EngineError = PinyinWorkerError

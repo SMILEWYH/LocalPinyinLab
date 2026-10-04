@@ -23,37 +23,27 @@ struct LocalPinyinApp {
             InputSourceRegistration.run(enable: args.contains("--register"))
             return
         }
-        let isDemo = args.contains("--demo") || args.contains("--snapshot")
-        if !isDemo {
-            do {
-                let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-                    .appendingPathComponent("local.pinyinlab.inputmethod", isDirectory: true)
-                instanceLock = try SingleInstanceLock.acquire(in: directory)
-                guard instanceLock != nil else {
-                    NSLog("LocalPinyin lifecycle: another input service is already running")
-                    return
-                }
-            } catch {
-                NSLog("LocalPinyin lifecycle: cannot acquire input service lock")
-                exit(1)
+        do {
+            let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("local.pinyinlab.inputmethod", isDirectory: true)
+            instanceLock = try SingleInstanceLock.acquire(in: directory)
+            guard instanceLock != nil else {
+                NSLog("LocalPinyin lifecycle: another input service is already running")
+                return
             }
-            NSLog("LocalPinyin lifecycle: creating IMKServer")
-            server = IMKServer(name: "local.pinyinlab.inputmethod_Connection", bundleIdentifier: "local.pinyinlab.inputmethod")
-            guard server != nil else {
-                NSLog("LocalPinyin lifecycle: IMKServer creation failed")
-                exit(1)
-            }
-            NSLog("LocalPinyin lifecycle: IMKServer created; bundle=%@", Bundle.main.bundlePath)
+        } catch {
+            NSLog("LocalPinyin lifecycle: cannot acquire input service lock")
+            exit(1)
         }
-        if !isDemo { PinyinSession.shared.warm() }
+        NSLog("LocalPinyin lifecycle: creating IMKServer")
+        server = IMKServer(name: "local.pinyinlab.inputmethod_Connection", bundleIdentifier: "local.pinyinlab.inputmethod")
+        guard server != nil else {
+            NSLog("LocalPinyin lifecycle: IMKServer creation failed")
+            exit(1)
+        }
+        NSLog("LocalPinyin lifecycle: IMKServer created; bundle=%@", Bundle.main.bundlePath)
+        PinyinSession.shared.warm()
         let app = NSApplication.shared
-        if isDemo {
-            app.setActivationPolicy(.accessory)
-            Task { @MainActor in
-                do { try await DemoRunner.run(arguments: args) }
-                catch { print("Synthetic-input demo failed: \(error)"); exit(1) }
-            }
-        }
         app.run()
     }
 }
