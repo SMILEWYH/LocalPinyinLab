@@ -1,5 +1,6 @@
 import Foundation
 import Translation
+import PinyinInfrastructure
 
 @main
 struct TranslationProbe {

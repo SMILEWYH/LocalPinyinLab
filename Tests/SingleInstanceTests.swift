@@ -1,3 +1,4 @@
+import PinyinInfrastructure
 import Foundation
 
 @main struct SingleInstanceTests {

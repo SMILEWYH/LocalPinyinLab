@@ -28,7 +28,7 @@
   → Control + Shift + R 朗读当前选中行的英文
 ```
 
-译文示例来自此前验证，具体输出可能随系统模型变化。实现见 [InputController.swift](Sources/InputController.swift) 与 [AppleTranslator.swift](Sources/AppleTranslator.swift)。
+译文示例来自此前验证，具体输出可能随系统模型变化。实现见 [InputSession.swift](Sources/PinyinApplication/InputSession.swift) 与 [AppleTranslator.swift](Sources/PinyinInfrastructure/AppleTranslator.swift)。
 
 翻译输入是**每一行候选的中文内容**，不是原始拼音。逐段选词时，译文对应当前候选片段；翻译请求不额外携带文档前文或已经选好的中文片段。含汉字的候选才请求翻译，纯拼音与纯表情候选不请求翻译。
 
@@ -54,7 +54,7 @@
 | 朗读 | 至少一个已安装的 Apple 英语声音 |
 | 脚本工具 | Bash、Python 3、`xcrun`、`codesign`、`sandbox-exec` |
 
-使用较新 SDK 构建：源码含 macOS 26.4+ 的 `.lowLatency` 翻译策略分支，旧 SDK 不一定能够编译。当前没有 Swift Package、Xcode 工程或第三方包依赖，直接通过脚本编译。
+使用较新 SDK 构建：源码含 macOS 26.4+ 的 `.lowLatency` 翻译策略分支，旧 SDK 不一定能够编译。当前使用 [Swift Package](Package.swift) 声明模块及编译依赖，启用 Swift 6 语言模式；无需 Xcode 工程或第三方包。构建和测试脚本共用 SwiftPM 配置。
 
 [Info.plist](Info.plist) 当前版本为 `0.1.0`，构建号 `4`。程序仅做本机 ad-hoc 签名，没有 Developer ID 签名或公证。
 
@@ -138,35 +138,44 @@ build/translation-probe
 
 ## 源码结构与实现
 
+项目按真实 Swift 模块拆分，模块导入与依赖由 [Package.swift](Package.swift) 检查。完整的状态约束、时序、扩展步骤见 [架构说明](Docs/ARCHITECTURE.md)。
+
 ```text
-Sources/       输入服务、组合状态、候选 UI、翻译、语音与进程管理
-Probes/        苹果拼音 worker、沙盒配置、模型准备与诊断工具
-Tests/         合成输入、事件逻辑、性能、故障恢复、语音与单实例测试
-Scripts/       构建和测试入口
-Resources/     中英文输入源名称
-Info.plist     输入源标识、IMK 连接与部署配置
-LICENSE        GPL 许可证正文
-NOTICE         上游参考与改编说明
+Sources/
+  PinyinCore/           组合、拼音规则、候选、分页、翻译状态值
+  PinyinApplication/    输入会话协调、服务端口、批量翻译与缓存
+  PinyinInfrastructure/ 苹果服务、worker 通信、输入源及单实例锁
+  PinyinPresentation/   AppKit 候选窗口、绘制、快照和按键适配
+  LocalPinyin/          IMK 宿主适配、服务装配、主入口和演示
+  TestSupport/          仅供测试的轻量断言，无需 XCTest
+Worker/                正式运行的苹果拼音 worker 与沙盒
+Probes/                模型准备与独立诊断工具
+Tests/                 独立模块测试和真实系统集成测试
+Scripts/               统一构建与测试入口
+Resources/             中英文输入源名称
 ```
 
-| 文件 | 职责 |
-| --- | --- |
-| [Main.swift](Sources/Main.swift) | 主入口、运行时校验、IMKServer 生命周期、预热与演示模式 |
-| [InputController.swift](Sources/InputController.swift) | 按键分发、宿主 marked text、选词、异步请求、页内翻译与朗读协调 |
-| [CompositionState.swift](Sources/CompositionState.swift) | 已选中文与剩余拼音、逐段消费、撤回与删除 |
-| [Candidate.swift](Sources/Candidate.swift) | 候选数据、reading 到原始拼音的消费长度映射、有界上下文、单次诊断查询 |
-| [PinyinSession.swift](Sources/PinyinSession.swift) | 常驻 worker、匿名管道通信、取消、超时、一次重试与子进程清理 |
-| [PinyinProbe.m](Probes/PinyinProbe.m) / [pinyin.sb](Probes/pinyin.sb) | 私有引擎运行时签名校验、候选与 reading 提取、worker 沙盒 |
-| [AppleTranslator.swift](Sources/AppleTranslator.swift) | 已安装模型检查、批量翻译、结果映射、最多 256 条内存缓存 |
-| [EnglishSpeaker.swift](Sources/EnglishSpeaker.swift) | 朗读快捷键、当前候选定位、本地声音选择与播放 |
-| [CandidateView.swift](Sources/CandidateView.swift) / [CandidatePanel.swift](Sources/CandidatePanel.swift) | 白色竖排布局、蓝色高亮、光标附近的非激活窗口 |
-| [CandidateSnapshot.swift](Sources/CandidateSnapshot.swift) | 候选视图导出为 2 倍分辨率 PNG |
-| [SingleInstanceLock.swift](Sources/SingleInstanceLock.swift) | 在 IMK 注册前用 `flock` 排除重复服务实例 |
-| [InputSourceRegistration.swift](Sources/InputSourceRegistration.swift) | 输入源状态检查与显式注册工具 |
+| 模块 | 职责与边界 | 项目内依赖 |
+| --- | --- | --- |
+| `PinyinCore` | 纯值类型和同步规则；状态通过受控操作修改 | 无，仅 Foundation |
+| `PinyinApplication` | 按键行为、宿主生命周期、查询与翻译请求有效期、缓存；通过协议调用外部能力 | Core |
+| `PinyinInfrastructure` | 本地引擎进程、Apple Translation、AVSpeech、TIS 和进程锁 | Core、Application |
+| `PinyinPresentation` | 只渲染当前页快照，适配 NSEvent；不负责选词或发起查询 | Core、Application |
+| `LocalPinyin` | 装配真实服务，衔接 IMK 生命周期与宿主 marked text | 以上四个模块 |
 
-正常输入使用预热的常驻 worker；独立演示及部分测试使用一次性查询进程。常驻查询的每次管道读取有 3 秒期限，失败后重启并重试一次；取消会跳过尚未执行的旧请求，已经执行的旧请求返回后丢弃结果。worker 退出或无响应时清理本项目创建的子进程。
+核心业务可以从 [CompositionState](Sources/PinyinCore/CompositionState.swift)、[CandidateList](Sources/PinyinCore/CandidateList.swift) 和 [InputSession](Sources/PinyinApplication/InputSession.swift) 独立阅读。系统能力的接口集中在 [Ports.swift](Sources/PinyinApplication/Ports.swift)，输入会话不导入 AppKit、InputMethodKit、Translation 或 AVFAudio。
 
-翻译只处理当前页含汉字的候选，去重后批量请求，使用请求标识对应响应。macOS 26.4+ 选择低延迟策略；缓存按最早存入顺序淘汰。输入代次、翻页和取消检查共同避免旧译文覆盖当前内容。
+主要约束：
+
+- 拼音只能由小写 ASCII 字母和 `'` 组成；已选片段的原始拼音加待转换后缀总长不超过 128。选择必须消费有效的非空前缀，撤回恢复原始分隔符。
+- 候选只存引擎文本和消费长度；译文使用独立状态枚举，成功译文、加载状态、模型缺失与错误不会混用。朗读只接受成功且非空的汉字候选译文。
+- 分页只存一个绝对选中索引，页号与页内高亮由它推导；空列表没有选中项，每页最多 9 项。
+- 输入查询与页翻译各有独立请求标识。输入变化、翻页、取消、提交和停用会使旧请求失效；即使服务忽略取消，迟到响应也无法更新当前状态。
+- 翻译响应必须完整、标识唯一、与请求一一对应。整批验证后才更新最多 256 项的内存 FIFO 缓存；每个请求保留自己的缓存命中快照，避免并发淘汰导致崩溃。
+
+正常输入使用预热的常驻 worker；独立演示及部分测试每次新建一个 worker，并复用同一套安全传输。管道读取每次有 3 秒期限，通信失败后最多重启重试一次；非法拼音在启动进程前拒绝。响应帧最多 4 MiB，输入与上下文只走匿名管道。取消会跳过尚未执行的旧请求，已经执行的请求返回后丢弃结果；进程退出或无响应时清理本项目创建的子进程。
+
+翻译只处理当前页含汉字的候选，去重后批量请求，按标识恢复原顺序。macOS 26.4+ 选择低延迟策略；不自动下载模型，不改写真实译文。
 
 ## 测试与诊断
 
@@ -174,14 +183,15 @@ NOTICE         上游参考与改编说明
 
 | 命令 | 验证范围 |
 | --- | --- |
+| `bash Scripts/check-core.sh` | 纯状态约束、翻译缓存与响应完整性、输入会话异步竞态、worker 协议和 AppKit 事件映射；不需要词库、语言包或声音 |
 | `bash Scripts/check-synthetic.sh` | 真实苹果引擎的短词、长句、分隔符、前缀候选，以及逐段选择、撤回、删除和上下文长度 |
 | `build/translation-probe` | 模型状态、固定中文样本的真实翻译、缓存重复项和结果顺序 |
 | `bash Scripts/check-speech.sh` | 快捷键与高亮行映射、拒绝未就绪内容、本地语音合成为内存 PCM；不经扬声器播放 |
 | `bash Scripts/check-single-instance.sh` | 跨进程互斥及释放后重新取得锁 |
-| `bash Scripts/check-return-key.sh` | 实际 InputController 事件代码配合内存宿主，验证回车、无组合按键透传及迟到响应不会重新打开候选 |
+| `bash Scripts/check-return-key.sh` | 真实 InputSession 配合协议测试替身，验证回车、组合前缀、无组合透传、宿主重入及迟到响应；另测 NSEvent 映射 |
 | `bash Scripts/check-performance.sh` | 常驻 / 单次查询对比、上下文重置、快速输入取消、子进程崩溃恢复及超时清理 |
 
-测试使用合成输入，不注册输入源或修改安装中的应用。语音与翻译测试依赖本机资源；私有引擎测试包含具体候选断言，系统升级导致输出变化时需要检查失败原因。回车测试替换了 IMK 宿主、查询和窗口边界，因此不能替代真实应用中的键盘验收。
+测试使用合成输入，不注册输入源或修改安装中的应用。语音与翻译测试依赖本机资源；私有引擎测试包含具体候选断言，系统升级导致输出变化时需要检查失败原因。回车测试直接注入宿主、查询和窗口协议，不再通过改写源文件或伪造 IMK 类进行测试；它不能替代真实应用中的键盘验收。测试是 SwiftPM 可执行目标，使用轻量断言，不依赖完整 Xcode 的 XCTest；统一入口为 `bash Scripts/check-core.sh`，不是 `swift test`。
 
 只读诊断示例：
 
@@ -208,7 +218,20 @@ build/candidate-preview build/candidate-preview-synthetic.png
 
 ## 已验证结果与待验证项
 
-以下是本次开发对话及已有测试的记录，不能代替在其他机器上的验收。
+### 本次重构验证（2026-10-04）
+
+- Swift 6 release 构建、worker 与应用的严格签名检查、控制器运行时名称/bundle 标识检查均通过。
+- `check-core.sh` 通过：13 组核心约束、15 组翻译服务、7 组 worker 协议测试，以及输入会话和 NSEvent 映射回归。
+- 真实引擎的短词、整句、前缀、逐段选择、撤回和删除通过；翻译模型状态为 installed，实际中英翻译与缓存顺序通过。
+- 本地 Samantha 语音向内存生成 50,360 个 PCM 帧；跨进程锁排他与释放、worker 崩溃恢复、取消和超时回收均通过。
+- 合成 UI 预览和真实 `pingying` 候选 PNG 已导出检查，保持白色竖排与蓝色高亮。模型准备工具仅完成构建，未打开或触发下载。
+- 本次常驻 `p` / `n` / `nihao` 查询中位耗时分别为 1.35 / 1.36 / 3.33 ms；独立查询约 114.50 / 116.90 / 121.99 ms。模拟无响应 worker 在 7.10 秒内完成重试与强制回收。
+
+本次未安装或替换当前输入服务。上述结果验证代码、协议、系统服务与构建产物；重构后的真实 IMK 宿主键盘行为仍需实机验收。部分首次 SwiftPM 链接输出了 CLT 缺少 Xcode 专用搜索目录的警告，但构建、链接、运行及签名检查均成功。
+
+### 重构前的实机与历史记录
+
+以下保留此前开发对话的记录，不能代替重构版本或其他机器的验收。
 
 | 项目 | 结果与边界 |
 | --- | --- |
@@ -219,7 +242,7 @@ build/candidate-preview build/candidate-preview-synthetic.png
 | 删除与候选恢复 | 重启服务后，用户确认 TextEdit 候选出现、删除正常 |
 | 新朗读快捷键 | 用户确认 TextEdit 中 `Control + Shift + R` 听到 Hello，候选正常，未把“你好”上屏 |
 | 构建与合成测试 | 已有记录中构建、严格签名、候选、分段、翻译、语音、单实例和故障恢复检查通过 |
-| 回车 | 已实现并安装；内存宿主事件测试通过，真实应用中的实体键盘行为仍待确认 |
+| 回车 | 旧版本曾安装并通过内存宿主测试；重构版本的协议回归测试结果见上方，真实应用中的实体键盘行为仍待确认 |
 | 英文模式切换 | 代码已实现；用户曾暂缓专门验收，不能据此标记完整通过 |
 | Codex 与其他宿主 | Codex 曾发生输入会话故障，恢复后尚无单独确认；多应用、全屏、多屏和不同键盘布局仍待覆盖 |
 
@@ -244,7 +267,7 @@ build/candidate-preview build/candidate-preview-synthetic.png
 - 正常输入的拼音、有限前文和候选通过匿名管道在本机进程间传递，不放入命令行参数，不由项目写入键入日志或历史文件。
 - **沙盒限制适用于拼音 worker**：允许读取配置中的系统资源及 worker 文件，不允许读取个人 Library、写入学习数据、联网或连接 XPC 服务。主输入服务及苹果 Translation / 语音服务不在这个 worker 沙盒内。
 - 主输入控制器通过公开 IMK 接口按需读取有限前文；提交或停用后清除组合及前文。启用安全输入时放弃处理按键。
-- 翻译缓存仅保存在控制器内存中，最多 256 条；不因每次提交立即清空，在淘汰或控制器释放后移除。项目不持久保存该缓存。
+- 翻译缓存仅保存在控制器内存中，最多 256 条；不因每次提交立即清空，在淘汰或缓存服务释放后移除。项目不持久保存该缓存。
 - 正常服务仅输出固定生命周期诊断信息；命令行探针可以输出它们自身的合成样本。单实例锁文件位于 `~/Library/Caches/local.pinyinlab.inputmethod/input-service.lock`，不保存输入内容。
 - 仓库排除编译应用、构建缓存、运行日志、安装备份和个人测试文稿。苹果词库、翻译模型及声音由系统提供，不随源码分发。
 

@@ -2,7 +2,7 @@ import Carbon
 import Foundation
 
 @MainActor
-enum InputSourceRegistration {
+public enum InputSourceRegistration {
     static let rootID = "local.pinyinlab.inputmethod"
     static func name(_ source: TISInputSource, key: CFString) -> String {
         guard let pointer = TISGetInputSourceProperty(source, key) else { return "" }
@@ -12,7 +12,7 @@ enum InputSourceRegistration {
         guard let pointer = TISGetInputSourceProperty(source, key) else { return false }
         return CFBooleanGetValue(Unmanaged<CFBoolean>.fromOpaque(pointer).takeUnretainedValue())
     }
-    static func run(enable: Bool) {
+    public static func run(enable: Bool) {
         if enable { print("register=\(TISRegisterInputSource(Bundle.main.bundleURL as CFURL))") }
         let sources = TISCreateInputSourceList(nil, true).takeRetainedValue() as! [TISInputSource]
         for id in [rootID, rootID + ".Hans"] {

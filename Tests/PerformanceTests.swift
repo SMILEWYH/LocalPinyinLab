@@ -1,5 +1,7 @@
 import Foundation
 import Darwin
+import PinyinCore
+import PinyinInfrastructure
 
 @main
 struct PerformanceTests {

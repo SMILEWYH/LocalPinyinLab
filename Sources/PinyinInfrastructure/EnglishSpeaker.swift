@@ -1,12 +1,14 @@
-import AppKit
 import AVFAudio
+import PinyinApplication
 
 @MainActor
-final class EnglishSpeaker {
+public final class EnglishSpeaker: SpeechPlaying {
     private let synthesizer = AVSpeechSynthesizer()
     private lazy var voice = Self.installedVoice()
 
-    static func installedVoice() -> AVSpeechSynthesisVoice? {
+    public init() {}
+
+    public static func installedVoice() -> AVSpeechSynthesisVoice? {
         let voices = AVSpeechSynthesisVoice.speechVoices().filter {
             $0.identifier.hasPrefix("com.apple.") && $0.language.hasPrefix("en-") &&
             !$0.voiceTraits.contains(.isPersonalVoice) && !$0.voiceTraits.contains(.isNoveltyVoice)
@@ -15,30 +17,19 @@ final class EnglishSpeaker {
             ?? voices.first { $0.language == "en-US" } ?? voices.first
     }
 
-    static func matches(_ event: NSEvent) -> Bool {
-        event.keyCode == 15 && event.modifierFlags.intersection([.command, .control, .option, .shift]) == [.control, .shift]
-    }
-
-    static func selectedText(rows: [Candidate], page: Int, highlighted: Int) -> String? {
-        guard page >= 0, (0..<9).contains(highlighted) else { return nil }
-        let index = page * 9 + highlighted
-        guard rows.indices.contains(index) else { return nil }
-        return rows[index].speechText
-    }
-
-    static func utterance(_ text: String, voice: AVSpeechSynthesisVoice) -> AVSpeechUtterance {
+    public static func utterance(_ text: String, voice: AVSpeechSynthesisVoice) -> AVSpeechUtterance {
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = voice
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
         return utterance
     }
 
-    func speak(_ text: String) -> Bool {
+    public func speak(_ text: String) -> Bool {
         stop()
         guard let voice else { return false }
         synthesizer.speak(Self.utterance(text, voice: voice))
         return true
     }
 
-    func stop() { synthesizer.stopSpeaking(at: .immediate) }
+    public func stop() { synthesizer.stopSpeaking(at: .immediate) }
 }

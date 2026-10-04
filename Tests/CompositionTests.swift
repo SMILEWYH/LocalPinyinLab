@@ -1,4 +1,6 @@
 import Foundation
+import PinyinCore
+import PinyinInfrastructure
 
 @main
 struct CompositionTests {
@@ -6,7 +8,7 @@ struct CompositionTests {
         let root = URL(fileURLWithPath: CommandLine.arguments[1])
         let engine = ApplePinyinEngine(workerRoot: root)
         var state = CompositionState()
-        state.pending = "pingying"
+        precondition(state.append("pingying"))
         let initial = try engine.candidates(for: state.pending)
         let bottle = initial.first { $0.text == "瓶" }!
         precondition(initial.count > 9 && initial.contains { $0.text == "平" })
@@ -22,7 +24,7 @@ struct CompositionTests {
         print("PASS: undo selected segments restores exact original pinyin")
 
         state = CompositionState()
-        state.pending = "xian'zai'bei'jing'shi'jian'ji'dian'zhong"
+        precondition(state.append("xian'zai'bei'jing'shi'jian'ji'dian'zhong"))
         let start = try engine.candidates(for: state.pending)
         precondition(state.choose(start.first { $0.text == "现在" }!))
         precondition(state.pending == "bei'jing'shi'jian'ji'dian'zhong")
@@ -41,14 +43,14 @@ struct CompositionTests {
         let hello = try engine.candidates(for: "nihao")
         precondition(hello.contains { $0.text == "👋" })
         precondition(hello.first { $0.text == "你" }?.consumedCount == 2)
-        precondition(ApplePinyinEngine.consumedCount(reading: "xi", in: "xi'an") == 3)
-        precondition(ApplePinyinEngine.consumedCount(reading: "hao", in: "nihao") == nil)
+        precondition(PinyinRules.consumedCount(reading: "xi", in: "xi'an") == 3)
+        precondition(PinyinRules.consumedCount(reading: "hao", in: "nihao") == nil)
         let before = state.markedText
-        precondition(!state.choose(Candidate(text: "bad", translation: "", consumedCount: 999)))
+        precondition(!state.choose(Candidate(text: "bad", consumedCount: 999)))
         precondition(state.markedText == before)
         print("PASS: emoji retained, prefix coverage checked, malformed selection cannot lose text")
         let context = String(repeating: "中文👨‍👩‍👧‍👦e\u{301}", count: 50)
-        let bounded = ApplePinyinEngine.boundedContext(context)
+        let bounded = PinyinRules.boundedContext(context)
         precondition(bounded.utf16.count <= 128 && context.hasSuffix(bounded))
         precondition(!bounded.isEmpty && bounded.last == "e\u{301}")
         print("PASS: bounded context preserves Chinese, emoji and combining characters")

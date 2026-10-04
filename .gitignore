@@ -6,3 +6,6 @@ Acceptance/
 *.log
 *.app/
 *.zip
+
+.build/
+.swiftpm/

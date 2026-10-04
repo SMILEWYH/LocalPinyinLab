@@ -1,7 +1,8 @@
 import AppKit
+import PinyinCore
 
 extension CandidateView {
-    func writePNG(to url: URL) throws {
+    public func writePNG(to url: URL) throws {
         let size = preferredSize
         guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(ceil(size.width * 2)), pixelsHigh: Int(ceil(size.height * 2)), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
               let context = NSGraphicsContext(bitmapImageRep: bitmap) else { throw CocoaError(.fileWriteUnknown) }

@@ -26,7 +26,7 @@ static BOOL validRequest(id request) {
         ![request[@"pinyin"] isKindOfClass:[NSString class]] ||
         ![request[@"context"] isKindOfClass:[NSString class]]) return NO;
     NSString *query = request[@"pinyin"];
-    return query.length <= 128 && [request[@"context"] length] <= 512 &&
+    return query.length > 0 && query.length <= 128 && [request[@"context"] length] <= 512 &&
         [query rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyz'"] invertedSet]].location == NSNotFound;
 }
 
@@ -77,6 +77,7 @@ int main(int argc, const char *argv[]) {
         if (!mode || !*mode) return 3;
         @try {
             id engine = [[cls alloc] initWithInputModeName:*mode scriptType:0];
+            if (!engine) return 3;
             [engine setAdjustsWordFrequency:NO];
             [engine setAutocorrectionEnabled:YES];
             [engine setAddressBookEntries:@[]];

@@ -16,7 +16,7 @@ struct SetupView: View {
             Text("请在苹果系统提示中准备中英文离线语言包。完成后自动测试三条合成文本，结果写入验证日志。")
         }
         .padding(24)
-        .translationTask(source: Locale.Language(identifier: "zh-Hans"), target: Locale.Language(identifier: "en")) { session in
+        .translationTask(source: Locale.Language(identifier: "zh-Hans"), target: Locale.Language(identifier: "en")) { @Sendable session in
             do {
                 try await session.prepareTranslation()
                 var output: [String] = []

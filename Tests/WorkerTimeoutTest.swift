@@ -1,4 +1,5 @@
 import Foundation
+import PinyinInfrastructure
 @main
 struct WorkerTimeoutTest {
     static func main() throws {

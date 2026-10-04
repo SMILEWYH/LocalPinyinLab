@@ -1,9 +1,10 @@
 // Swift adaptation of qingjian's AppKit vertical layout; see NOTICE and LICENSE.
 import AppKit
+import PinyinCore
 
 @MainActor
-final class CandidateView: NSView {
-    let rows: [Candidate]
+public final class CandidateView: NSView {
+    let rows: [CandidateRow]
     let pinyin: String
     let highlighted: Int
     let footer: String
@@ -14,10 +15,11 @@ final class CandidateView: NSView {
     private let rowPadding: CGFloat = 4
     private let gap: CGFloat = 8
 
-    override var isFlipped: Bool { true }
+    public override var isFlipped: Bool { true }
 
-    init(rows: [Candidate], pinyin: String, highlighted: Int, footer: String) {
-        self.rows = Array(rows.prefix(9))
+    public init(rows: [CandidateRow], pinyin: String, highlighted: Int, footer: String) {
+        precondition(rows.count <= PinyinRules.pageSize)
+        self.rows = rows
         self.pinyin = pinyin
         self.highlighted = highlighted
         self.footer = footer
@@ -26,7 +28,7 @@ final class CandidateView: NSView {
         setFrameSize(preferredSize)
     }
 
-    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+    public required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
     private func size(_ text: String, _ font: NSFont) -> NSSize {
         (text as NSString).size(withAttributes: [.font: font])
@@ -37,8 +39,8 @@ final class CandidateView: NSView {
     private var rowHeight: CGFloat { size("中文", textFont).height + rowPadding * 2 }
     private var topHeight: CGFloat { size("x", annotationFont).height + rowPadding * 2 }
 
-    var preferredSize: NSSize {
-        let gloss = rows.map { size($0.translation, annotationFont).width }.max() ?? 0
+    public var preferredSize: NSSize {
+        let gloss = rows.map { size($0.translationText, annotationFont).width }.max() ?? 0
         let bodyWidth = indexWidth + gap + textWidth + gap + gloss
         return NSSize(width: max(bodyWidth, size(pinyin, annotationFont).width, size(footer, indexFont).width) + padding * 2,
                       height: padding * 2 + topHeight + rowHeight * CGFloat(rows.count)
@@ -49,7 +51,7 @@ final class CandidateView: NSView {
         (text as NSString).draw(at: NSPoint(x: x, y: y), withAttributes: [.font: font, .foregroundColor: color])
     }
 
-    override func draw(_ dirtyRect: NSRect) {
+    public override func draw(_ dirtyRect: NSRect) {
         NSColor.white.setFill()
         NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill()
         NSColor(white: 0.78, alpha: 1).setStroke()
@@ -67,7 +69,7 @@ final class CandidateView: NSView {
             }
             drawText(String(index + 1), font: indexFont, color: selected ? .white : NSColor(white: 0.45, alpha: 1), x: padding, y: y + rowPadding + smallOffset)
             drawText(row.text, font: textFont, color: selected ? .white : NSColor(white: 0.12, alpha: 1), x: textX, y: y + rowPadding)
-            drawText(row.translation, font: annotationFont, color: selected ? .white : NSColor(white: 0.38, alpha: 1), x: glossX, y: y + rowPadding + smallOffset)
+            drawText(row.translationText, font: annotationFont, color: selected ? .white : NSColor(white: 0.38, alpha: 1), x: glossX, y: y + rowPadding + smallOffset)
             y += rowHeight
         }
         drawText(footer, font: indexFont, color: NSColor(white: 0.4, alpha: 1), x: bounds.width - padding - size(footer, indexFont).width, y: y + rowPadding)

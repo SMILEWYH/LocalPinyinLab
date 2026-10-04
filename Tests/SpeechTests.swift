@@ -1,5 +1,8 @@
-import AppKit
+import Foundation
 import AVFAudio
+import PinyinCore
+import PinyinApplication
+import PinyinInfrastructure
 
 private final class AudioResult: @unchecked Sendable {
     private let lock = NSLock()
@@ -20,27 +23,30 @@ private final class AudioResult: @unchecked Sendable {
 @main
 struct SpeechTests {
     @MainActor static func main() {
-        let pending = Candidate(text: "你好", translation: "等待本地翻译")
-        let hello = Candidate(text: "你好", translation: "Hello", translationReady: true)
-        let account = Candidate(text: "你号", translation: "Your account", translationReady: true)
+        let pending = CandidateRow(candidate: Candidate(text: "你好", consumedCount: 5))
+        let hello = CandidateRow(candidate: Candidate(text: "你好", consumedCount: 5), translation: .ready("Hello"))
+        let account = CandidateRow(candidate: Candidate(text: "你号", consumedCount: 5), translation: .ready("Your account"))
         precondition(pending.speechText == nil)
-        precondition(Candidate(text: "nihao", translation: "nihao", translationReady: true).speechText == nil)
-        precondition(Candidate(text: "你好", translation: " ", translationReady: true).speechText == nil)
-        precondition(Candidate(text: "你好", translation: "本地翻译暂不可用").speechText == nil)
-        precondition(EnglishSpeaker.selectedText(rows: [hello, account], page: 0, highlighted: 1) == "Your account")
-        let pages = Array(repeating: hello, count: 9) + [account]
-        precondition(EnglishSpeaker.selectedText(rows: pages, page: 1, highlighted: 0) == "Your account")
-        precondition(EnglishSpeaker.selectedText(rows: [hello], page: 1, highlighted: 0) == nil)
-        for (key, flags, expected): (UInt16, NSEvent.ModifierFlags, Bool) in [
+        precondition(CandidateRow(candidate: Candidate(text: "nihao", consumedCount: 5), translation: .ready("nihao")).speechText == nil)
+        precondition(CandidateRow(candidate: Candidate(text: "你好", consumedCount: 5), translation: .ready(" ")).speechText == nil)
+        precondition(CandidateRow(candidate: Candidate(text: "你好", consumedCount: 5), translation: .unavailable(.failed)).speechText == nil)
+        var selected = CandidateList(rows: [hello, account])
+        selected.move(by: 1)
+        precondition(selected.selectedRow?.speechText == "Your account")
+        var pages = CandidateList(rows: Array(repeating: hello, count: PinyinRules.pageSize) + [account])
+        pages.movePage(by: 1)
+        precondition(pages.selectedRow?.speechText == "Your account")
+        precondition(pages.page == 1 && pages.highlighted == 0)
+        precondition(pages.indexOnPage(1) == nil)
+        precondition(CandidateList().selectedRow?.speechText == nil)
+        for (key, flags, expected): (UInt16, KeyModifiers, Bool) in [
             (15, [.control, .shift], true), (15, [.control], false),
             (15, [.shift], false), (15, [.command, .shift], false),
             (15, [.control, .shift, .option], false), (15, [], false),
             (49, [.option], false), (49, [.control, .shift], false), (49, [], false)
         ] {
-            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
-                timestamp: 0, windowNumber: 0, context: nil, characters: key == 15 ? "R" : " ",
-                charactersIgnoringModifiers: key == 15 ? "r" : " ", isARepeat: false, keyCode: key)!
-            precondition(EnglishSpeaker.matches(event) == expected)
+            let event = KeyStroke(code: key, characters: key == 15 ? "R" : " ", modifiers: flags)
+            precondition(event.requestsSpeech == expected)
         }
         print("PASS: highlighted row/page mapping, pending/error/raw-pinyin rejection, exact Control+Shift+R; Space combinations excluded")
         guard let voice = EnglishSpeaker.installedVoice() else { fatalError("No installed Apple English voice") }

@@ -1,3 +1,4 @@
+import PinyinCore
 import AppKit
 import InputMethodKit
 

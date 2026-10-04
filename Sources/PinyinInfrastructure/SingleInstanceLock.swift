@@ -3,12 +3,12 @@ import Darwin
 
 // Hold before registering the IMK connection. Launch Services may start the app
 // concurrently with an update/restart; a second process must not register again.
-final class SingleInstanceLock {
+public final class SingleInstanceLock {
     private let descriptor: Int32
     private init(descriptor: Int32) { self.descriptor = descriptor }
     deinit { close(descriptor) }
 
-    static func acquire(in directory: URL) throws -> SingleInstanceLock? {
+    public static func acquire(in directory: URL) throws -> SingleInstanceLock? {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700])
         let path = directory.appendingPathComponent("input-service.lock").path

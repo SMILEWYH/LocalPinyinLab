@@ -1,6 +1,6 @@
 #!/bin/bash
 set -euo pipefail
-cd "$(dirname "$0")/.."
+source "$(dirname "$0")/common.sh"
 ROOT="$PWD/build/LocalPinyin.app/Contents/Resources/Worker"
 /usr/bin/sandbox-exec -D "WORKER_ROOT=$ROOT" -f "$ROOT/pinyin.sb" "$ROOT/pinyin-worker" --json nihao 2>/dev/null | /usr/bin/python3 -c 'import json,sys; words=json.load(sys.stdin); assert "你好" in words; print("PASS: synthetic nihao -> 你好")'
 if /usr/bin/sandbox-exec -D "WORKER_ROOT=$ROOT" -f "$ROOT/pinyin.sb" "$ROOT/pinyin-worker" --json 'invalid!' >/dev/null 2>&1; then
@@ -27,5 +27,4 @@ for query, expected in cases.items():
     print("PASS: sentence and prefix candidates: " + query)
 PY
 
-xcrun swiftc -target arm64-apple-macos26.0 -module-cache-path build/module-cache -parse-as-library Sources/Candidate.swift Sources/CompositionState.swift Tests/CompositionTests.swift -o build/composition-tests
-build/composition-tests "$ROOT"
+run_product composition-tests "$ROOT"
