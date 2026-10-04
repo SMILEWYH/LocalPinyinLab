@@ -65,7 +65,7 @@ if args.count == 2 && args[1] == "--check-registration" {
         }
     }
     if let ascii = currentASCII, requiredIDs.contains(string(ascii, kTISPropertyInputSourceID)) {
-        failures.append("Chinese-English Pinyin is still the current ASCII input source")
+        failures.append("Pinyin is still the current ASCII input source")
     }
     for failure in failures { print("registration_error=" + failure) }
     print("registration_check=" + (failures.isEmpty ? "passed" : "failed"))
