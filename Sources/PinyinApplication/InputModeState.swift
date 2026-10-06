@@ -3,6 +3,8 @@ import PinyinCore
 /// Shared by this input method's controllers, never by other system input sources.
 @MainActor public final class InputModeState {
     public private(set) var mode: InputMode = .chinesePinyin
+    public private(set) var isUppercaseLocked = false
+    private(set) var revision: UInt64 = 0
     private var capsLock: Bool?
 
     public init() {}
@@ -11,13 +13,26 @@ import PinyinCore
     /// must not change this input method's remembered mode.
     public func synchronizeCapsLock(_ enabled: Bool) { capsLock = enabled }
 
-    @discardableResult public func observeCapsLock(_ enabled: Bool) -> Bool {
+    @discardableResult public func observeCapsLock(_ enabled: Bool, modifiers: KeyModifiers = []) -> Bool {
         let previous = capsLock
         capsLock = enabled
         guard let previous, previous != enabled else { return false }
-        toggle()
+        // Modified system shortcuts still update the baseline, so a later key
+        // cannot replay their Caps Lock edge as a mode change.
+        guard modifiers.intersection([.control, .option, .command]).isEmpty else { return false }
+        if modifiers.contains(.shift) {
+            isUppercaseLocked.toggle()
+            mode = .englishDirect
+            revision &+= 1
+        } else {
+            toggle()
+        }
         return true
     }
 
-    public func toggle() { mode = mode == .chinesePinyin ? .englishDirect : .chinesePinyin }
+    public func toggle() {
+        mode = mode == .chinesePinyin ? .englishDirect : .chinesePinyin
+        if mode == .chinesePinyin { isUppercaseLocked = false }
+        revision &+= 1
+    }
 }

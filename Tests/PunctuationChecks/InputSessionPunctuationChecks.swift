@@ -234,6 +234,7 @@ import PinyinApplication
     var isVisible = false
     func show(_ presentation: CandidatePresentation) { isVisible = true }
     func showLoading(pinyin: String) { isVisible = true }
+    func showCaseStatus(uppercaseLocked: Bool) { isVisible = true }
     func hide() { isVisible = false }
 }
 

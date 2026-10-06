@@ -34,4 +34,12 @@ public struct KeyStroke: Sendable {
               characters.unicodeScalars.allSatisfy({ (65...90).contains($0.value) || (97...122).contains($0.value) }) else { return characters }
         return modifiers.contains(.shift) ? characters.uppercased() : characters.lowercased()
     }
+
+    /// The input method's uppercase lock is independent of the hardware LED.
+    /// Shift remains useful for symbols while ASCII letters stay uppercase.
+    public func text(uppercaseLocked: Bool) -> String {
+        guard uppercaseLocked, !passesThrough, !characters.isEmpty,
+              characters.unicodeScalars.allSatisfy({ (65...90).contains($0.value) || (97...122).contains($0.value) }) else { return textIgnoringCapsLock }
+        return characters.uppercased()
+    }
 }

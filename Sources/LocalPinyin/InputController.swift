@@ -56,9 +56,9 @@ import PinyinPresentation
             guard let host = controller.host else { return false }
             switch input {
             case .key(let key): return controller.session.handle(key, host: host)
-            case .capsLock(let enabled):
-                _ = controller.session.handleCapsLock(enabled, host: host)
-                return true
+            case .capsLock(let enabled, let modifiers):
+                _ = controller.session.handleCapsLock(enabled, modifiers: modifiers, host: host)
+                return modifiers.isEmpty || modifiers == [.shift]
             case .mouseDown, .unhandled: return false
             }
         }

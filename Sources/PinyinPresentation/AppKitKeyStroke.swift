@@ -3,20 +3,25 @@ import PinyinApplication
 
 extension KeyStroke {
     @MainActor public init(event: NSEvent) {
-        var flags: KeyModifiers = []
-        if event.modifierFlags.contains(.shift) { flags.insert(.shift) }
-        if event.modifierFlags.contains(.control) { flags.insert(.control) }
-        if event.modifierFlags.contains(.option) { flags.insert(.option) }
-        if event.modifierFlags.contains(.command) { flags.insert(.command) }
-        self.init(code: event.keyCode, characters: event.characters ?? "", modifiers: flags,
+        self.init(code: event.keyCode, characters: event.characters ?? "", modifiers: KeyModifiers(event.modifierFlags),
                   isRepeat: event.isARepeat, capsLock: event.modifierFlags.contains(.capsLock))
+    }
+}
+
+private extension KeyModifiers {
+    init(_ flags: NSEvent.ModifierFlags) {
+        self = []
+        if flags.contains(.shift) { insert(.shift) }
+        if flags.contains(.control) { insert(.control) }
+        if flags.contains(.option) { insert(.option) }
+        if flags.contains(.command) { insert(.command) }
     }
 }
 
 /// Modifier and mouse events do not have keyDown's characters/isARepeat fields.
 public enum InputEvent {
     case key(KeyStroke)
-    case capsLock(Bool)
+    case capsLock(Bool, modifiers: KeyModifiers)
     case mouseDown
     case unhandled
 
@@ -28,7 +33,7 @@ public enum InputEvent {
         switch event.type {
         case .keyDown: self = .key(KeyStroke(event: event))
         case .flagsChanged where event.keyCode == 57:
-            self = .capsLock(event.modifierFlags.contains(.capsLock))
+            self = .capsLock(event.modifierFlags.contains(.capsLock), modifiers: KeyModifiers(event.modifierFlags))
         case .leftMouseDown, .rightMouseDown, .otherMouseDown: self = .mouseDown
         default: self = .unhandled
         }
