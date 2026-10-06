@@ -27,7 +27,7 @@ let package = Package(
         probe("inputsource-tool", file: "InputSourceTool.swift"),
         probe("menu-icon", file: "MenuIcon.swift"),
         probe("settings-icon", file: "SettingsIcon.swift"),
-        .executableTarget(name: "PinyinSettings", dependencies: ["PinyinCore", "PinyinInfrastructure"], path: "Tools/PinyinSettings"),
-        .testTarget(name: "PinyinSettingsTests", dependencies: ["PinyinSettings", "PinyinCore"])
+        .executableTarget(name: "PinyinSettings", dependencies: ["PinyinCore", "PinyinApplication", "PinyinInfrastructure"], path: "Tools/PinyinSettings"),
+        .testTarget(name: "PinyinSettingsTests", dependencies: ["PinyinSettings", "PinyinCore", "PinyinApplication"])
     ]
 )

@@ -31,6 +31,7 @@ private final class SettingsNavigation: ObservableObject {
 struct SettingsRootView: View {
     @StateObject private var navigation: SettingsNavigation
     @StateObject private var languagePacks = LanguagePacksModel()
+    @StateObject private var speechShortcut = SpeechShortcutSettingsModel()
 
     init(initialPage: SettingsPage) {
         _navigation = StateObject(wrappedValue: SettingsNavigation(initialPage: initialPage))
@@ -67,7 +68,8 @@ struct SettingsRootView: View {
             Group {
                 switch navigation.selectedPage ?? .guide {
                 case .guide:
-                    UsageGuideView(model: languagePacks, openLanguagePacks: { navigation.selectedPage = .languagePacks })
+                    UsageGuideView(model: languagePacks, speechShortcut: speechShortcut,
+                                   openLanguagePacks: { navigation.selectedPage = .languagePacks })
                 case .languagePacks:
                     LanguagePacksView(model: languagePacks)
                 }
@@ -89,7 +91,12 @@ struct SettingsRootView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             languagePacks.refreshFromPreferences()
+            speechShortcut.refreshFromPreferences()
             Task { await languagePacks.checkAllAvailability() }
+        }
+        .onReceive(DistributedNotificationCenter.default().publisher(
+            for: SpeechShortcutPreferences.didChangeNotification, object: SpeechShortcutPreferences.notificationObject as NSString)) { _ in
+                speechShortcut.refreshFromPreferences()
         }
     }
 }

@@ -47,7 +47,7 @@ SwiftPM 使用 Swift 6 语言模式与明确的访问级别。应用的所有会
 
 ### Application：行为协调与端口
 
-`InputSession` 拥有一个控制器会话的组合、候选列表、有限前文及异步请求。`InputModeState` 管理中英模式、大写锁定与 Caps Lock 按键基线，由本地服务的各控制器共享。激活和普通 Caps 事件按实际锁状态对齐：灯灭为中文，灯亮为英文；配合 Shift 的真实 Caps 事件切换大写锁定并保持英文，切回中文自动解除锁定。Control、Option、Command 组合仍透传，但 Caps 状态变化也会校准模式。普通 keyDown 只补偿实际 Caps 状态，不推断漏掉的 Shift 组合。在调用宿主前完成模式更新和组合失效，避免重入导致重复切换或提交。`KeyStroke` 是无平台对象的按键值，保留物理键码和独立的 Caps 状态，不把 Caps 混入快捷键修饰符；大写锁定仅转换 ASCII 字母，快捷键、数字、标点和非 ASCII 文本保持原样。`Ports.swift` 声明：
+`InputSession` 拥有一个控制器会话的组合、候选列表、有限前文及异步请求。`InputModeState` 管理中英模式、大写锁定与 Caps Lock 按键基线，由本地服务的各控制器共享。激活和普通 Caps 事件按实际锁状态对齐：灯灭为中文，灯亮为英文；配合 Shift 的真实 Caps 事件切换大写锁定并保持英文，切回中文自动解除锁定。除已配置且满足朗读条件的组合外，Control、Option、Command 组合仍透传，但 Caps 状态变化也会校准模式。普通 keyDown 只补偿实际 Caps 状态，不推断漏掉的 Shift 组合。在调用宿主前完成模式更新和组合失效，避免重入导致重复切换或提交。`KeyStroke` 是无平台对象的按键值，保留物理键码和独立的 Caps 状态，不把 Caps 混入快捷键修饰符；大写锁定仅转换 ASCII 字母，快捷键、数字、标点和非 ASCII 文本保持原样。`Ports.swift` 声明：
 
 | 端口 | 约定 |
 | --- | --- |
@@ -62,6 +62,8 @@ SwiftPM 使用 Swift 6 语言模式与明确的访问级别。应用的所有会
 
 `InputSession.QueryState` 明确区分 `idle / querying / ready / selectedTextOnly`：候选列表为空不能用于推断查询是否结束。组合存在时上下方向键始终由会话处理；只剩已选中文时空格直接提交。普通中英切换和大写切换都显示约 1 秒的状态提示；提示采用独立定位，优先放光标上方，顶部空间不足时向左右侧避让，候选窗口保持原有定位。宿主同步重入改变会话或模式后，旧提示不再显示。
 
+`SpeechShortcut` 是可校验、可编码的两键或三键配置，普通键使用物理键码，名称由支持列表生成，默认 `Command + Option`。`InputSession` 仅在中文模式、`ready` 候选和非空译文时接管朗读。纯修饰键状态机在所有键松开后触发，取消后必须回到无修饰状态才能开始下一次；其他输入、候选/语言/配置变化和生命周期切换使旧手势失效。含普通键的快捷键只在首次按下时播放。
+
 ### Infrastructure：系统能力
 
 - `PinyinSession` 是常驻 worker 的异步入口。生产环境在装配处选择共享实例；应用层不引用单例。
@@ -71,6 +73,7 @@ SwiftPM 使用 Swift 6 语言模式与明确的访问级别。应用的所有会
 - `AppleTranslator` 按请求的目标语言只使用已安装模型，并把 Translation 框架的非 Sendable 对象封闭在异步执行函数内部；不请求下载。
 - `LocalSpeechPlayer` 每次查询当前本地 Apple 声音，优先目标地区，再选同语言声音；无对应语言声音时返回不可用，不回退到英语。它只管理朗读及声音选择，不处理快捷键或候选页索引。
 - `TranslationPreferences` 使用固定的 `local.pinyinlab.preferences` CFPreferences 域共享目标语言，读取前同步，默认英语；保存同步失败会抛错。保存成功后通过 `DistributedNotificationCenter` 通知失效，接收方重新读取并校验偏好，不直接采用通知中的值；无需 App Group entitlement。
+- `SpeechShortcutPreferences` 在同一偏好域独立保存朗读快捷键，读取时验证键位和组合，缺失或损坏时回退默认；保存失败回滚缓存，成功后通知设置 App 与活动输入会话重新读取。
 - `CapsLockController` 在系统边界读写 IOHID Caps Lock 状态。快捷键和大写锁定改变模式后，由仍处于活动状态的 IMK 宿主同步系统锁：英文为亮灯，中文为灭灯。写入前只确认预期基线，避免系统异步回声重复切换；普通 keyDown 的旧 flags 在写入等待期间及已确认的旧事件范围内不会覆盖新模式，真实 Caps 事件仍可表达新的操作。写入通过非阻塞读回确认，失效宿主/安全输入/切换输入源会终止旧确认。
 - `SingleInstanceLock` 与 `InputSourceRegistration` 保持独立系统边界。取得锁后才创建 IMKServer，锁文件不删除。
 
@@ -84,7 +87,11 @@ SwiftPM 使用 Swift 6 语言模式与明确的访问级别。应用的所有会
 
 语言包安装状态只保留本次系统查询结果，不写入偏好。设置应用启动、回到前台或点击“检查全部语言包”时刷新全部 15 种语言；下载完成后更新当前状态并刷新列表。语言卡片分两行展示名称与安装状态：“已安装”配绿色勾，“未安装”配灰色下载图标；当前选择独立使用强调色边框和“当前使用”徽标，不覆盖安装状态。
 
+快捷键设置模型区分已保存值和草稿，保存失败保留原生效值，外部更新只在没有未保存修改时覆盖草稿。恢复默认也需要保存。状态保留在根视图，切换侧栏不会丢失。
+
 ### Presentation 与应用装配
+
+`AppKitKeyStroke` 将 Command/Option/Control/Shift 的 `flagsChanged` 转为独立修饰事件，Caps Lock 保持原处理；普通 keyUp、拖拽和滚动用于取消手势。`InputController` 额外比较 `CGEventSource` 会话键鼠计数及按住状态，取消被系统或菜单先处理的组合；不安装全局事件 tap，不消费修饰事件本身。
 
 `CandidateView` 只绘制最多 9 行的当前页；越界页数据是调用错误，不通过内部截取掩盖。`CandidatePanel` 根据宿主提供的光标位置定位，取不到时回退鼠标位置。
 

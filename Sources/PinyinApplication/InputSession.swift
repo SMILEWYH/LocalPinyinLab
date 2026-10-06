@@ -18,6 +18,7 @@ import PinyinCore
     public private(set) var candidates = CandidateList()
     public private(set) var queryState: QueryState = .idle
     public private(set) var translationLanguage: TranslationLanguage
+    public private(set) var speechShortcut: SpeechShortcut
     private let provider: any CandidateProviding
     private let translator: any CandidateTranslating
     private let speaker: any SpeechPlaying
@@ -37,23 +38,86 @@ import PinyinCore
     private var translationPage: TranslationPage?
     private var queuedSelection: Int?
     private var speechStatus: String?
+    private enum SpeechGesture { case idle, collecting, armed, releasing, blocked }
+    private var speechGesture: SpeechGesture = .idle
+    private var speechModifiers: KeyModifiers = []
 
     public init(provider: any CandidateProviding, translator: any CandidateTranslating,
                 speaker: any SpeechPlaying, presenter: any CandidatePresenting,
-                modeState: InputModeState = InputModeState(), translationLanguage: TranslationLanguage = .english) {
+                modeState: InputModeState = InputModeState(), translationLanguage: TranslationLanguage = .english,
+                speechShortcut: SpeechShortcut = .default) {
         self.provider = provider
         self.translator = translator
         self.speaker = speaker
         self.presenter = presenter
         self.modeState = modeState
         self.translationLanguage = translationLanguage
+        self.speechShortcut = speechShortcut
     }
 
     deinit { queryTask?.cancel(); translationTask?.cancel() }
 
     public func activate(capsLock: Bool? = nil) {
+        speechGesture = .blocked
         if let capsLock { modeState.synchronizeCapsLock(capsLock) }
         provider.warm()
+    }
+
+    public func setSpeechShortcut(_ shortcut: SpeechShortcut) {
+        guard speechShortcut != shortcut else { return }
+        speechShortcut = shortcut
+        stopSpeech()
+    }
+
+    /// A cancelled chord cannot restart while any of its modifiers remain held.
+    /// Adapters also call this for mouse events, focus changes and missed keyDowns.
+    public func cancelSpeechShortcutGesture() {
+        // External cancellation may precede our first flagsChanged event, so
+        // the last observed modifiers cannot establish a clean keyboard state.
+        speechGesture = .blocked
+    }
+
+    public var isSpeechShortcutGestureInProgress: Bool {
+        switch speechGesture {
+        case .collecting, .armed, .releasing: return true
+        case .idle, .blocked: return false
+        }
+    }
+
+    private var canSpeakHighlighted: Bool {
+        mode == .chinesePinyin && !composition.isEmpty && queryState == .ready && candidates.selectedRow?.speechText != nil
+    }
+
+    /// Modifier-only chords speak after every modifier has been released. A
+    /// release/repress, an extra modifier or another key invalidates the chord.
+    @discardableResult public func handleSpeechModifiers(_ modifiers: KeyModifiers, host nextHost: any InputHost) -> Bool {
+        guard bind(nextHost) else { return false }
+        let previous = speechModifiers
+        speechModifiers = modifiers
+        guard speechShortcut.isModifierOnly else { speechGesture = .idle; return false }
+        if modifiers.isEmpty {
+            let completed = speechGesture == .armed || speechGesture == .releasing
+            speechGesture = .idle
+            guard completed, canSpeakHighlighted else { return false }
+            speakHighlighted()
+            return true
+        }
+        let expected = speechShortcut.modifiers
+        guard modifiers.isSubset(of: expected), canSpeakHighlighted else { speechGesture = .blocked; return false }
+        switch speechGesture {
+        case .idle:
+            guard previous.isEmpty else { speechGesture = .blocked; return false }
+            speechGesture = modifiers == expected ? .armed : .collecting
+        case .collecting:
+            guard previous.isSubset(of: modifiers) else { speechGesture = .blocked; return false }
+            if modifiers == expected { speechGesture = .armed }
+        case .armed:
+            if modifiers != expected { speechGesture = .releasing }
+        case .releasing:
+            if !modifiers.isSubset(of: previous) { speechGesture = .blocked }
+        case .blocked: break
+        }
+        return false
     }
 
     /// Retarget translations without losing the current composition or page.
@@ -119,10 +183,12 @@ import PinyinCore
     }
 
     @discardableResult public func handle(_ key: KeyStroke, host nextHost: any InputHost) -> Bool {
+        speechModifiers = key.modifiers
+        speechGesture = key.modifiers.isEmpty ? .idle : .blocked
         guard bind(nextHost) else { return false }
         _ = observeCapsLock(key.capsLock, modifiers: key.modifiers, isCapsLockEvent: false)
         guard host === nextHost else { return false }
-        if mode == .chinesePinyin, !composition.isEmpty, key.requestsSpeech {
+        if speechShortcut.keyCode == key.code, speechShortcut.modifiers == key.modifiers, canSpeakHighlighted {
             if !key.isRepeat { speakHighlighted() }
             return true
         }
@@ -201,6 +267,7 @@ import PinyinCore
     }
 
     public func deactivate() {
+        cancelSpeechShortcutGesture()
         hostRevision &+= 1
         let previousHost = host
         let text = composition.isEmpty ? nil : composition.markedText
@@ -211,6 +278,7 @@ import PinyinCore
 
     /// Secure-input transitions discard composition and clear the host's marked text.
     public func cancel() {
+        cancelSpeechShortcutGesture()
         hostRevision &+= 1
         let previousHost = host
         clear()
@@ -341,7 +409,11 @@ import PinyinCore
         show()
     }
 
-    private func stopSpeech() { speaker.stop(); speechStatus = nil }
+    private func stopSpeech() {
+        if isSpeechShortcutGestureInProgress { cancelSpeechShortcutGesture() }
+        speaker.stop()
+        speechStatus = nil
+    }
 
     private func commit(suffix: String = "") {
         guard !composition.isEmpty || !suffix.isEmpty else { return }

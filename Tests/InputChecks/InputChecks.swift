@@ -27,6 +27,7 @@ func checkEqual<T: Equatable>(_ actual: T, _ expected: T,
         let paging = PagingChecks()
         let asynchronous = AsyncInputChecks()
         let languages = TranslationLanguageChecks()
+        let speech = SpeechShortcutChecks()
         let cases: [(String, @MainActor () async throws -> Void)] = [
             ("Chinese punctuation follows the current mode", checks.chinesePunctuation),
             ("English punctuation passes through unchanged", checks.englishPunctuation),
@@ -78,7 +79,17 @@ func checkEqual<T: Equatable>(_ actual: T, _ expected: T,
             ("Selecting the current language does not restart speech or translation", languages.selectingSameLanguageDoesNotRestartWork),
             ("Translation reset preserves selection and candidate-engine diagnostics", languages.resetTranslationsPreservesSelectionAndEngineDiagnostics),
             ("Translation caches separate languages and preserve response ordering", languages.cacheSeparatesTargetsAndKeepsResponseOrder),
-            ("Cancelled translations cannot populate another language's cache", languages.cancelledBatchCannotFillAnotherLanguagesCache)
+            ("Cancelled translations cannot populate another language's cache", languages.cancelledBatchCannotFillAnotherLanguagesCache),
+            ("Speech shortcuts validate two and three keys and protect candidate controls", speech.validatesTwoAndThreeKeys),
+            ("Persisted speech shortcuts reject invalid values and derive trusted names", speech.validatesPersistedValues),
+            ("The default speech gesture plays once after all modifiers are released", speech.defaultGestureSpeaksOnceAfterRelease),
+            ("Three-modifier speech gestures require every configured modifier", speech.threeModifierGestureRequiresTheCompleteChord),
+            ("Other keys and extra modifiers cancel the entire speech gesture", speech.otherKeysAndExtraModifiersCancelTheWholeGesture),
+            ("Released and repressed modifiers cannot rearm a speech gesture", speech.releasingAndRepressingModifiersCannotRearm),
+            ("Translations arriving during a held chord cannot arm speech", speech.aTranslationArrivingDuringTheChordDoesNotArmIt),
+            ("Custom speech key chords require ready speech and suppress repeats", speech.customKeyChordsRequireReadySpeechAndDoNotRepeat),
+            ("Speech cancellation and shortcut changes require fresh chords", speech.explicitCancellationAndConfigurationChangesNeedFreshChords),
+            ("Candidate, language and lifecycle changes cancel pending speech", speech.candidateLanguageAndLifecycleChangesCancelGestures)
         ]
         var failures = 0
         for (name, run) in cases {

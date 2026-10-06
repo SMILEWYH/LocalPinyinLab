@@ -16,6 +16,8 @@ import PinyinPresentation
     private var capsSyncTask: Task<Void, Never>?
     private var pendingCapsState: Bool?
     private var capsAcknowledgement: (enabled: Bool, timestamp: TimeInterval)?
+    private var speechActivityBaseline: [UInt32]?
+    private var speechGestureBeganAt: TimeInterval?
     private var host: IMKHost?
     private lazy var session = InputSession(
         provider: PinyinSession.shared,
@@ -23,11 +25,18 @@ import PinyinPresentation
         speaker: LocalSpeechPlayer(),
         presenter: CandidatePanel(anchor: { [weak self] in self?.host?.anchor ?? .zero }),
         modeState: InputController.modeState,
-        translationLanguage: TranslationPreferences.targetLanguage)
+        translationLanguage: TranslationPreferences.targetLanguage,
+        speechShortcut: SpeechShortcutPreferences.shortcut)
 
     @objc private func translationLanguageDidChange(_ notification: Notification) {
         guard isActive else { return }
         session.setTranslationLanguage(TranslationPreferences.targetLanguage)
+    }
+
+    @objc private func speechShortcutDidChange(_ notification: Notification) {
+        guard isActive else { return }
+        session.setSpeechShortcut(SpeechShortcutPreferences.shortcut)
+        speechActivityBaseline = nil
     }
 
     override func recognizedEvents(_ sender: Any!) -> Int {
@@ -80,7 +89,15 @@ import PinyinPresentation
             notifications.addObserver(controller, selector: #selector(translationLanguageDidChange(_:)),
                                       name: TranslationPreferences.didChangeNotification,
                                       object: TranslationPreferences.notificationObject, suspensionBehavior: .deliverImmediately)
+            notifications.removeObserver(controller, name: SpeechShortcutPreferences.didChangeNotification,
+                                         object: SpeechShortcutPreferences.notificationObject)
+            notifications.addObserver(controller, selector: #selector(speechShortcutDidChange(_:)),
+                                      name: SpeechShortcutPreferences.didChangeNotification,
+                                      object: SpeechShortcutPreferences.notificationObject, suspensionBehavior: .deliverImmediately)
             controller.session.setTranslationLanguage(TranslationPreferences.targetLanguage)
+            controller.session.setSpeechShortcut(SpeechShortcutPreferences.shortcut)
+            controller.speechActivityBaseline = nil
+            controller.session.cancelSpeechShortcutGesture()
             controller.cancelCapsSync()
             controller.session.activate(capsLock: controller.capsLockController.isEnabled()
                 ?? NSEvent.modifierFlags.contains(.capsLock))
@@ -96,6 +113,7 @@ import PinyinPresentation
         return MainActor.assumeIsolated {
             guard let event = callbackEvent, let client = callbackSender as? any IMKTextInput else { return false }
             guard !IsSecureEventInputEnabled() else {
+                controller.speechActivityBaseline = nil
                 controller.cancelCapsSync()
                 controller.session.cancel()
                 controller.session.synchronizeCapsLock(event.modifierFlags.contains(.capsLock))
@@ -114,10 +132,19 @@ import PinyinPresentation
                 controller.session.finishComposition()
                 return false
             }
-            if case .unhandled = input { return false }
+            if case .unhandled = input {
+                controller.session.cancelSpeechShortcutGesture()
+                if controller.host?.client === client, let host = controller.host,
+                   event.modifierFlags.intersection([.command, .option, .control, .shift, .function]).isEmpty {
+                    _ = controller.session.handleSpeechModifiers([], host: host)
+                }
+                return false
+            }
             if controller.host?.client !== client {
                 controller.lifecycleRevision &+= 1
                 controller.cancelCapsSync()
+                controller.speechActivityBaseline = nil
+                controller.session.cancelSpeechShortcutGesture()
                 controller.host = IMKHost(client: client)
             }
             guard let host = controller.host else { return false }
@@ -132,6 +159,7 @@ import PinyinPresentation
                 }
                 return handled
             case .capsLock(let enabled, let modifiers):
+                controller.session.cancelSpeechShortcutGesture()
                 if (controller.pendingCapsState ?? controller.capsAcknowledgement?.enabled) != enabled {
                     controller.cancelCapsSync()
                     controller.capsAcknowledgement = nil
@@ -140,9 +168,55 @@ import PinyinPresentation
                     controller.synchronizeCapsIndicator(host: host, revision: revision)
                 }
                 return modifiers.isEmpty || modifiers == [.shift]
+            case .modifiersChanged(let modifiers):
+                controller.checkSpeechShortcutActivity(modifiers: modifiers, timestamp: event.timestamp)
+                // Flags still belong to the foreground app. The gesture only
+                // observes them; it must never swallow Command/Option state.
+                _ = controller.session.handleSpeechModifiers(modifiers, host: host)
+                return false
+            case .shortcutCancelled:
+                controller.session.cancelSpeechShortcutGesture()
+                // A plain character's keyUp is also a clean baseline. Blocking
+                // here until another flagsChanged would discard the first
+                // speech gesture immediately after finishing a pinyin word.
+                if event.modifierFlags.intersection([.command, .option, .control, .shift, .function]).isEmpty {
+                    _ = controller.session.handleSpeechModifiers([], host: host)
+                }
+                return false
             case .mouseDown, .unhandled: return false
             }
         }
+    }
+
+    /// IMK may not receive a key consumed by a system/menu shortcut. Compare
+    /// session event counters as well, without installing a global event tap.
+    private func checkSpeechShortcutActivity(modifiers: KeyModifiers, timestamp: TimeInterval) {
+        let eventTypes: [CGEventType] = [
+            .keyDown, .keyUp, .leftMouseDown, .rightMouseDown, .otherMouseDown,
+            .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel
+        ]
+        let counters = eventTypes.map { CGEventSource.counterForEventType(.combinedSessionState, eventType: $0) }
+        if speechActivityBaseline == nil { speechGestureBeganAt = timestamp }
+        // Compare event time too: a queued initial flagsChanged can arrive after
+        // a system shortcut's keyDown/keyUp already advanced the counters.
+        let beganAt = speechGestureBeganAt ?? timestamp
+        let interveningEvent = eventTypes.contains {
+            let now = ProcessInfo.processInfo.systemUptime
+            let elapsed = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0)
+            return elapsed.isFinite && now - elapsed > beganAt + 0.001
+        }
+        let modifierCodes: Set<CGKeyCode> = [54, 55, 56, 57, 58, 59, 60, 61, 62, 63]
+        let otherKeyHeld = (CGKeyCode(0)...CGKeyCode(127)).contains {
+            !modifierCodes.contains($0) && CGEventSource.keyState(.combinedSessionState, key: $0)
+        }
+        let mouseHeld = [CGMouseButton.left, .right, .center].contains {
+            CGEventSource.buttonState(.combinedSessionState, button: $0)
+        }
+        if otherKeyHeld || mouseHeld || interveningEvent || (speechActivityBaseline.map { $0 != counters } ?? false) {
+            session.cancelSpeechShortcutGesture()
+        }
+        if modifiers.isEmpty { speechActivityBaseline = nil; speechGestureBeganAt = nil }
+        else if speechActivityBaseline == nil { speechActivityBaseline = counters }
     }
 
     /// Hardware writes happen only for the still-active host. In particular,
@@ -221,6 +295,7 @@ import PinyinPresentation
         nonisolated(unsafe) let controller = self
         nonisolated(unsafe) let callbackSender = sender
         return MainActor.assumeIsolated {
+            controller.session.cancelSpeechShortcutGesture()
             guard !IsSecureEventInputEnabled() else { controller.session.cancel(); return false }
             guard let client = callbackSender as? any IMKTextInput else { return false }
             // Never submit an old composition into a new client's document.
@@ -234,7 +309,10 @@ import PinyinPresentation
 
     override func commitComposition(_ sender: Any!) {
         nonisolated(unsafe) let controller = self
-        MainActor.assumeIsolated { controller.session.deactivate() }
+        MainActor.assumeIsolated {
+            controller.speechActivityBaseline = nil
+            controller.session.deactivate()
+        }
     }
 
     override func deactivateServer(_ sender: Any!) {
@@ -245,6 +323,9 @@ import PinyinPresentation
             controller.isActive = false
             DistributedNotificationCenter.default().removeObserver(controller,
                 name: TranslationPreferences.didChangeNotification, object: TranslationPreferences.notificationObject)
+            DistributedNotificationCenter.default().removeObserver(controller,
+                name: SpeechShortcutPreferences.didChangeNotification, object: SpeechShortcutPreferences.notificationObject)
+            controller.speechActivityBaseline = nil
             controller.cancelCapsSync()
             controller.host = nil
             controller.session.deactivate()

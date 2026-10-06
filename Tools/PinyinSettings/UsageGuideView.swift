@@ -3,6 +3,7 @@ import SwiftUI
 
 struct UsageGuideView: View {
     @ObservedObject var model: LanguagePacksModel
+    @ObservedObject var speechShortcut: SpeechShortcutSettingsModel
     let openLanguagePacks: () -> Void
     @StateObject private var keyboardSettings = KeyboardSettingsModel()
 
@@ -55,8 +56,10 @@ struct UsageGuideView: View {
             }
             SettingsCard(title: "目标语言朗读", symbol: "speaker.wave.2") {
                 Text(model.voiceMessage).font(.headline).accessibilityIdentifier("speech-voice-status")
-                Text("选中已有\(model.targetLanguage.displayName)译文的候选后，按 Control + Shift + R 朗读。")
+                Text("选中已有\(model.targetLanguage.displayName)译文的候选后，\(speechShortcut.savedShortcut.isModifierOnly ? "按下并松开" : "按") \(speechShortcut.savedShortcut.displayName) 朗读。")
                     .accessibilityIdentifier("guide-shortcut-speak")
+                SpeechShortcutSettingsView(model: speechShortcut)
+                Divider()
                 Text("在左侧「语言包」中选择目标语言并准备对应语言包，朗读会跟随所选语言。译文在后台加载，不影响中文选词。")
                     .font(.callout).foregroundStyle(.secondary)
                 if model.voiceName == nil {

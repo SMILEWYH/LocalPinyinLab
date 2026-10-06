@@ -116,6 +116,27 @@ struct PresentationChecks {
         }
         require(actualOn && !actualOff, "real Caps Lock edges must ignore the pending keyDown override")
         require(modifiers == [.shift], "physical Caps Lock edges must preserve other modifiers")
+
+        let chord = keyboardEvent(type: .flagsChanged, flags: [.command, .option], code: 58)
+        let release = keyboardEvent(type: .flagsChanged, flags: [], code: 55)
+        guard case .modifiersChanged(let chordModifiers) = InputEvent(event: chord),
+              case .modifiersChanged(let releasedModifiers) = InputEvent(event: release) else {
+            fatalError("Command/Option edges must reach the speech gesture")
+        }
+        require(chordModifiers == [.command, .option] && releasedModifiers.isEmpty,
+                "modifier adaptation must preserve both press and final release")
+        let keyUp = keyboardEvent(type: .keyUp, flags: [.command, .option], code: 4)
+        guard case .shortcutCancelled = InputEvent(event: keyUp) else {
+            fatalError("a keyUp must invalidate a gesture even if keyDown was handled by the app")
+        }
+        let fn = keyboardEvent(type: .flagsChanged, flags: [.command, .option, .function], code: 63)
+        guard case .shortcutCancelled = InputEvent(event: fn) else {
+            fatalError("unsupported Fn must not look like a clean modifier-only speech chord")
+        }
+        let fnHeld = keyboardEvent(type: .flagsChanged, flags: [.command, .option, .function], code: 55)
+        guard case .shortcutCancelled = InputEvent(event: fnHeld) else {
+            fatalError("a supported modifier edge must still reject an already-held Fn key")
+        }
     }
 
     @MainActor private static func keyboardEvent(type: NSEvent.EventType, flags: NSEvent.ModifierFlags,

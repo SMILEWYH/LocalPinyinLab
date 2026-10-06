@@ -9,7 +9,7 @@ extension KeyStroke {
     }
 }
 
-private extension KeyModifiers {
+public extension KeyModifiers {
     init(_ flags: NSEvent.ModifierFlags) {
         self = []
         if flags.contains(.shift) { insert(.shift) }
@@ -23,11 +23,14 @@ private extension KeyModifiers {
 public enum InputEvent {
     case key(KeyStroke)
     case capsLock(Bool, modifiers: KeyModifiers)
+    case modifiersChanged(KeyModifiers)
+    case shortcutCancelled
     case mouseDown
     case unhandled
 
     public static let recognizedEvents: NSEvent.EventTypeMask = [
-        .keyDown, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown
+        .keyDown, .keyUp, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown,
+        .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel
     ]
 
     @MainActor public init(event: NSEvent, capsLockOverride: Bool? = nil) {
@@ -36,6 +39,12 @@ public enum InputEvent {
         case .flagsChanged where event.keyCode == 57:
             // Real modifier edges remain authoritative while an earlier LED update is pending.
             self = .capsLock(event.modifierFlags.contains(.capsLock), modifiers: KeyModifiers(event.modifierFlags))
+        case .flagsChanged where event.modifierFlags.contains(.function):
+            self = .shortcutCancelled
+        case .flagsChanged where [54, 55, 56, 58, 59, 60, 61, 62].contains(event.keyCode):
+            self = .modifiersChanged(KeyModifiers(event.modifierFlags))
+        case .keyUp, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel:
+            self = .shortcutCancelled
         case .leftMouseDown, .rightMouseDown, .otherMouseDown: self = .mouseDown
         default: self = .unhandled
         }

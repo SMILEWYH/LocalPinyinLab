@@ -96,7 +96,7 @@ import PinyinApplication
         fixture.session.setTranslationLanguage(.japanese)
         try checkEqual(fixture.speaker.stops, stops + 1)
         try checkFalse(fixture.speaker.isSpeaking)
-        try checkTrue(fixture.speak())
+        try checkFalse(fixture.speak())
         try checkEqual(fixture.speaker.calls.count, 1)
         try await fixture.wait { fixture.translator.calls.count == 2 }
         fixture.translator.complete(1)
@@ -203,7 +203,9 @@ import PinyinApplication
         session.handle(KeyStroke(code: code, characters: text), host: host)
     }
     func speak() -> Bool {
-        session.handle(KeyStroke(code: 15, characters: "r", modifiers: [.control, .shift]), host: host)
+        _ = session.handleSpeechModifiers([.command], host: host)
+        _ = session.handleSpeechModifiers([.command, .option], host: host)
+        return session.handleSpeechModifiers([], host: host)
     }
     func wait(_ predicate: @MainActor () -> Bool) async throws { try await waitForLanguageCheck(predicate) }
     func finish() {

@@ -28,7 +28,6 @@ public struct KeyStroke: Sendable {
         capturedCapsLock = capsLockForText ?? capsLock
     }
 
-    public var requestsSpeech: Bool { code == 15 && modifiers == [.control, .shift] }
     public var switchesMode: Bool { code == 49 && modifiers == [.control, .shift] }
     public var passesThrough: Bool { !modifiers.intersection([.control, .option, .command]).isEmpty }
 
