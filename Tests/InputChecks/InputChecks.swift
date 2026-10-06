@@ -20,11 +20,12 @@ func checkEqual<T: Equatable>(_ actual: T, _ expected: T,
 }
 
 /// A standalone suite for machines with Command Line Tools and no XCTest framework.
-@main struct PunctuationChecks {
+@main struct InputChecks {
     @MainActor static func main() async {
         let checks = InputSessionPunctuationChecks()
         let uppercase = UppercaseChecks()
         let paging = PagingChecks()
+        let asynchronous = AsyncInputChecks()
         let cases: [(String, @MainActor () async throws -> Void)] = [
             ("Chinese punctuation follows the current mode", checks.chinesePunctuation),
             ("English punctuation passes through unchanged", checks.englishPunctuation),
@@ -44,7 +45,7 @@ func checkEqual<T: Equatable>(_ actual: T, _ expected: T,
             ("Uppercase lock toggles from both modes and physical Caps Lock states", uppercase.togglesFromBothModesAndCapsStates),
             ("Repeated Caps Lock and key events never repeat uppercase toggles or prompts", uppercase.repeatedEventsDoNotToggleOrRepeatStatus),
             ("Uppercase survives client changes, activation and shared sessions", uppercase.uppercaseSurvivesHostAndSessionChanges),
-            ("A keyDown recovers a missed Caps Lock event only once", uppercase.keyDownRecoversMissedCapsEvent),
+            ("A keyDown recovers physical Caps without inferring Shift+Caps", uppercase.keyDownRecoversMissedCapsEvent),
             ("Both switches back to Chinese clear uppercase lock", uppercase.returningToChineseClearsUppercase),
             ("Uppercase changes letters and preserves other text and shortcuts", uppercase.onlyLettersChangeAndShortcutsPassThrough),
             ("Uppercase toggle commits once and rejects late candidates", uppercase.toggleCommitsOnceAndRejectsLateCandidates),
@@ -54,7 +55,21 @@ func checkEqual<T: Equatable>(_ actual: T, _ expected: T,
             ("Plain Left pages candidates while Shift+Left restores a segment", paging.plainLeftPagesAndShiftLeftUndoesSegments),
             ("Arrows during candidate loading never commit or leave the IME", paging.arrowsDuringLoadingNeverCommit),
             ("Arrows pass through outside composition and with system shortcuts", paging.arrowsPassThroughOutsideCompositionAndWithShortcuts),
-            ("Left and right match Page Up and Page Down", paging.arrowsMatchPageUpAndPageDown)
+            ("Left and right match Page Up and Page Down", paging.arrowsMatchPageUpAndPageDown),
+            ("Mode transitions show one status without replay on activation", uppercase.modeStatusAppearsOnceForEachTransition),
+            ("Late candidates cannot replace a mode status", uppercase.modeStatusSurvivesLateCandidates),
+            ("Reentrant commits cannot show an obsolete mode status", uppercase.reentrantCommitCannotShowObsoleteMode),
+            ("Activation and restart map Caps off to Chinese and on to English", uppercase.activationAndRestartFollowPhysicalCaps),
+            ("Ordinary Caps stays aligned after mode and uppercase shortcuts", uppercase.ordinaryCapsStaysAlignedAfterShortcuts),
+            ("Modified Caps aligns mode while other system shortcuts pass through", uppercase.modifiedCapsAlignsWithoutStealingShortcuts),
+            ("Hardware acknowledgement only records a deduplication baseline", uppercase.hardwareAcknowledgementOnlyChangesBaseline),
+            ("Shared sessions adopt external Caps changes and restart cleanly", uppercase.sharedSessionsAdoptExternalCapsChanges),
+            ("Up and Down preserve loading composition and cancel queued selection", asynchronous.verticalNavigationWhileLoadingPreservesComposition),
+            ("Space commits selected Chinese after deleting the remaining pinyin", asynchronous.spaceCommitsSelectedTextAfterDeletingSuffix),
+            ("Same-page highlight changes retain their translation request", asynchronous.samePageNavigationRetainsTranslationRequest),
+            ("A changed page rejects late translations and preserves completed pages", asynchronous.changedPageRejectsLateTranslation),
+            ("A changed query rejects late candidates and translations", asynchronous.changedQueryRejectsLateCandidatesAndTranslation),
+            ("Highlight changes do not retry a failed translation", asynchronous.failedTranslationIsNotRetriedByHighlightChanges)
         ]
         var failures = 0
         for (name, run) in cases {

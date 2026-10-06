@@ -1,6 +1,6 @@
 # LocalPinyinLab 架构与状态约束
 
-本文对应 2026-10-04 的模块重构。功能说明以 [README](../README.md) 为入口；模块依赖以 [Package.swift](../Package.swift) 为准。重构保留中文拼音、分段选词、英文直出、离线翻译、当前候选朗读及诊断命令。
+本文包含 2026-10-06 的输入状态、取消、展示与构建优化。功能说明以 [README](../README.md) 为入口；模块依赖以 [Package.swift](../Package.swift) 为准；构建和语言包准备见 [SETUP](SETUP.md)。
 
 ## 1. 模块与依赖
 
@@ -40,11 +40,11 @@ SwiftPM 使用 Swift 6 语言模式与明确的访问级别。应用的所有会
 
 `Candidate` 是外部引擎返回的数据值，构造本身不保证适用于某个组合。实际接纳分两层验证：worker 解码验证 reading 是当前输入前缀；输入会话再次拒绝空白文本、表情及越界消费长度。过滤发生在分页/翻译之前；整条候选移除，不裁剪文字或改变消费长度。最终 `CompositionState.choose` 再验证一次，失败不会修改状态。替换引擎时应遵守同样的前缀契约。
 
-`CandidateRow` 与候选分离：引擎无需理解翻译文案，窗口也不能修改引擎结果。翻译状态枚举消除了“错误文案 + ready=true”这类双字段矛盾；`.ready` 中的空白值即使由错误调用方构造，也无法进入朗读。
+`CandidateRow` 与候选分离：引擎无需理解翻译文案，窗口也不能修改引擎结果。Core 只提供翻译状态与朗读判定，中文提示文案由 Presentation 格式化。翻译状态枚举消除了“错误文案 + ready=true”这类双字段矛盾；`.ready` 中的空白值即使由错误调用方构造，也无法进入朗读。
 
 ### Application：行为协调与端口
 
-`InputSession` 拥有一个控制器会话的组合、候选列表、有限前文及异步请求。`InputModeState` 管理中英模式、大写锁定与 Caps Lock 按键基线，由本地服务的各控制器共享。激活仅同步基线，活动期间 Caps 状态边沿才处理切换：单按切换中英，配合 Shift 切换大写锁定并进入英文，切回中文自动解除锁定；Control、Option、Command 组合仅同步基线。在调用宿主前完成模式更新和组合失效，避免重入导致重复切换或提交。`KeyStroke` 是无平台对象的按键值，保留物理键码和独立的 Caps 状态，不把 Caps 混入快捷键修饰符；大写锁定仅转换 ASCII 字母，快捷键、数字、标点和非 ASCII 文本保持原样。`Ports.swift` 声明：
+`InputSession` 拥有一个控制器会话的组合、候选列表、有限前文及异步请求。`InputModeState` 管理中英模式、大写锁定与 Caps Lock 按键基线，由本地服务的各控制器共享。激活和普通 Caps 事件按实际锁状态对齐：灯灭为中文，灯亮为英文；配合 Shift 的真实 Caps 事件切换大写锁定并保持英文，切回中文自动解除锁定。Control、Option、Command 组合仍透传，但 Caps 状态变化也会校准模式。普通 keyDown 只补偿实际 Caps 状态，不推断漏掉的 Shift 组合。在调用宿主前完成模式更新和组合失效，避免重入导致重复切换或提交。`KeyStroke` 是无平台对象的按键值，保留物理键码和独立的 Caps 状态，不把 Caps 混入快捷键修饰符；大写锁定仅转换 ASCII 字母，快捷键、数字、标点和非 ASCII 文本保持原样。`Ports.swift` 声明：
 
 | 端口 | 约定 |
 | --- | --- |
@@ -53,9 +53,11 @@ SwiftPM 使用 Swift 6 语言模式与明确的访问级别。应用的所有会
 | `TranslationBackend` | 返回携带批次请求标识的响应，顺序可以不同 |
 | `SpeechPlaying` | 播放明确传入的译文，报告是否有可用声音；可以随时停止 |
 | `InputHost` | 读取有限前文、更新 marked text、提交文本 |
-| `CandidatePresenting` | 显示不可变的当前页快照、加载状态、短暂大小写提示或隐藏 |
+| `CandidatePresenting` | 显示不可变的当前页快照、加载状态、短暂中英模式/大小写提示或隐藏 |
 
 `TranslationService` 负责去重、响应校验、顺序恢复及内存缓存；苹果翻译框架只是其后端。输入会话不读取系统模型状态，也不自行实现缓存；未安装模型通过 `TranslationFailure.modelsNotInstalled` 映射到明确的展示状态。
+
+`InputSession.QueryState` 明确区分 `idle / querying / ready / selectedTextOnly`：候选列表为空不能用于推断查询是否结束。组合存在时上下方向键始终由会话处理；只剩已选中文时空格直接提交。普通中英切换和大写切换都显示约 1 秒的状态提示；提示采用独立定位，优先放光标上方，顶部空间不足时向左右侧避让，候选窗口保持原有定位。宿主同步重入改变会话或模式后，旧提示不再显示。
 
 ### Infrastructure：系统能力
 
@@ -65,13 +67,16 @@ SwiftPM 使用 Swift 6 语言模式与明确的访问级别。应用的所有会
 - `ApplePinyinEngine` 的独立查询创建同一种 `PinyinWorker`，使用 `defer` 清理；不再保留另一套无界管道实现。
 - `AppleTranslator` 只使用已安装模型，并把 Translation 框架的非 Sendable 对象封闭在异步执行函数内部。
 - `EnglishSpeaker` 只管理系统语音及声音选择，不再处理快捷键或候选页索引。
+- `CapsLockController` 在系统边界读写 IOHID Caps Lock 状态。快捷键和大写锁定改变模式后，由仍处于活动状态的 IMK 宿主同步系统锁：英文为亮灯，中文为灭灯。写入前只确认预期基线，避免系统异步回声重复切换；普通 keyDown 的旧 flags 在写入等待期间及已确认的旧事件范围内不会覆盖新模式，真实 Caps 事件仍可表达新的操作。写入通过非阻塞读回确认，失效宿主/安全输入/切换输入源会终止旧确认。
 - `SingleInstanceLock` 与 `InputSourceRegistration` 保持独立系统边界。取得锁后才创建 IMKServer，锁文件不删除。
 
-`Worker/main.m` 是正式运行组件，已从 `Probes/` 移出。每次查询前后重置引擎与上下文，继续禁止词频学习、联系人和附加词库；沙盒规则位于 `Worker/pinyin.sb`。`Probes/` 仅保留独立准备和诊断工具。
+`Worker/main.m` 是正式运行组件。每次查询前后重置引擎与上下文，继续禁止词频学习、联系人和附加词库；沙盒规则位于 `Worker/pinyin.sb`。`Probes/` 保留诊断及图标生成工具；面向用户的语言包准备应用位于 `Tools/TranslationSetup/`，同时打包到输入法资源内并提供菜单入口。
 
 ### Presentation 与应用装配
 
 `CandidateView` 只绘制最多 9 行的当前页；越界页数据是调用错误，不通过内部截取掩盖。`CandidatePanel` 根据宿主提供的光标位置定位，取不到时回退鼠标位置。
+
+候选窗口使用屏幕约束下的稳定双列宽度，选中行允许有限换行，其余长文本截断，完整内容保留在辅助功能语义中。可用高度极小时围绕高亮项显示可容纳的行，保留原页内数字序号，并提示上下键查看；这不改变应用层候选或页索引。候选列表、每行文字/译文、选中状态、页码与加载状态均提供辅助功能信息。
 
 `LocalPinyin/InputController` 仅桥接 IMK 生命周期与 `NSEvent`。`IMKHost` 负责 IMK 的 UTF-16 范围和光标信息；`InputSession` 无需了解这些 API。Objective-C 的 IMK 回调没有完整 Swift actor 标注，适配边界使用 `MainActor.assumeIsolated` 明确要求系统在输入服务主线程回调，避免默默跨线程操作 UI。`nonisolated(unsafe)` 仅用于这几个同步回调中对控制器和 Objective-C 参数的局部借用，紧接运行时主执行器检查，不把这些对象发送给异步任务或其它队列。
 
@@ -98,7 +103,7 @@ SwiftPM 使用 Swift 6 语言模式与明确的访问级别。应用的所有会
 - 空列表的 `selectedIndex=nil`、页号/高亮为 0、页数为 0；窗口不显示该空页。
 - 非空列表选中索引始终落在有效范围。页号为 `selectedIndex / 9`，页内高亮为 `selectedIndex % 9`。
 - 换页选中目标页首项；上下移动跨页时，页号自动由索引变化。
-- 组合期间 `←` / `→` 与 `Page Up` / `Page Down` 翻页，`Shift + ←` 撤回已选片段；候选加载期间也消费翻页键，避免意外提交组合或移动宿主光标。
+- 组合期间 `←` / `→` 与 `Page Up` / `Page Down` 翻页，`Shift + ←` 撤回已选片段；候选加载期间也消费上下键和翻页键，避免意外提交组合或移动宿主光标。
 - 页内数字选择必须对应真实行，最后一页不存在的数字不会提交。
 - 等待查询时可以记住一次页内选择；结果不足以匹配该数字时仍显示有效候选。
 - 翻译更新同时验证行索引和对应源文本；请求标识验证由会话负责。
@@ -135,7 +140,9 @@ sequenceDiagram
 
 查询与翻译使用不同的 UUID 标识，不能以“任务已 cancel”作为唯一有效性判断。输入改变会清除查询和翻译标识；翻页会替换翻译标识，因此从第 1 页翻到第 2 页再回第 1 页，也不会接受第一次第 1 页的迟到响应。
 
-worker 的取消不打断正在进行的帧读取：排队请求在开始前检查取消，已发送请求读完后丢弃。这样同一管道上后续请求不会误用旧响应。单次读取期限 3 秒，通信错误最多重启一次；停止时先 TERM，100 ms 后仍运行则 KILL，并回收本项目子进程。启动握手与查询读取各自有期限，不能把 3 秒解释为整个查询链路的绝对总上限。
+同一可见页的候选索引与源文本构成翻译身份；仅移动高亮不取消或重复请求。失败后也不因同页导航重试，离开并返回该页或更新输入才允许再次请求。
+
+worker 的取消通过线程安全标记传入传输层，握手和读帧至多每 50 ms 检查一次。取消后在原串行队列回收整个 worker 并清空帧缓冲，直接抛出取消错误，不重试旧查询。新请求使用新管道，不能复用迟到半帧。单次读取期限仍为 3 秒，非取消通信错误最多重启一次；停止时先 TERM，100 ms 后仍运行则 KILL，并回收本项目子进程。50 ms 是检查间隔，不是包含系统调度和进程回收的总取消上限；启动握手与查询读取也各有期限。
 
 ### 提交与宿主生命周期
 
@@ -157,7 +164,7 @@ worker 的取消不打断正在进行的帧读取：排队请求在开始前检�
 | 增加快捷键 | 修改 KeyStroke 或 InputSession 的行为及事件映射 | 不把宿主应处理的组合键吞掉 |
 | 增加语音设置 | 替换 SpeechPlaying 或配置 EnglishSpeaker | 仅朗读就绪译文，交互变化时停止播放 |
 
-目前没有实现插件加载、设置持久化或动态词库；本地中英模式仅在当前服务进程内跨应用共享，不影响其他输入源，重启后重置。接口提供扩展边界，不代表其他功能已经存在。9 项页长同时决定数字键选择和 UI 标号，修改时必须一起检查交互与界面，不能当作任意运行时配置。
+目前没有实现插件加载、设置持久化或动态词库；中英模式与系统 Caps Lock 灯同步，激活和重启时采用实际锁状态；大写锁定仅在当前服务进程内共享，进程重启或灯灭时解除。Caps Lock 是系统状态，会被其他输入源观察到；本输入法只在自身激活且处理模式切换时写入，不在后台改动它。接口提供扩展边界，不代表其他功能已经存在。9 项页长同时决定数字键选择和 UI 标号，修改时必须一起检查交互与界面，不能当作任意运行时配置。
 
 ## 5. 构建
 
@@ -165,12 +172,12 @@ worker 的取消不打断正在进行的帧读取：排队请求在开始前检�
 bash Scripts/build.sh
 ```
 
-`Scripts/common.sh` 集中 SwiftPM 构建目录、arm64 架构和配置，默认 release；可用 `CONFIGURATION=debug` 运行同一套脚本。app bundle 继续输出到 `build/LocalPinyin.app`，worker、资源复制、ad-hoc 签名和复制后的严格签名验证由 `build.sh` 完成。构建不会安装或修改当前输入源。
+`Scripts/common.sh` 集中 SwiftPM 构建目录、arm64 架构和配置，默认 release；可用 `CONFIGURATION=debug` 运行同一套脚本。默认输出到 `~/Library/Caches/LocalPinyinLab/build/LocalPinyin.app`，通过 `LOCALPINYIN_BUILD_ROOT` 可指定其他非同步目录。worker、内嵌语言包准备工具、资源和 app 逐层 ad-hoc 签名并严格验证后，整体替换旧构建包，失败或可处理的中断会恢复旧包。构建不会安装或修改当前输入源。
 
-标点行为的回归检查可在只有 Command Line Tools 的环境下运行：
+输入、worker 和展示检查可在只有 Command Line Tools 的环境下运行：
 
 ```sh
-swift run --scratch-path build/swift --configuration release --arch arm64 punctuation-checks
+bash Scripts/check.sh
 ```
 
 ## 6. 本次重构处理的缺陷

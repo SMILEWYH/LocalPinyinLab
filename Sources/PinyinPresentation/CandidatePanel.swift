@@ -5,8 +5,8 @@ import PinyinApplication
 @MainActor
 public final class CandidatePanel: CandidatePresenting {
     private let anchor: () -> NSRect
-    private var caseStatusTask: Task<Void, Never>?
-    private var caseStatusID: UUID?
+    private var statusTask: Task<Void, Never>?
+    private var statusID: UUID?
     let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
 
     public init(anchor: @escaping () -> NSRect = { .zero }) {
@@ -20,24 +20,61 @@ public final class CandidatePanel: CandidatePresenting {
         panel.level = NSWindow.Level(rawValue: 101)
     }
 
-    deinit { caseStatusTask?.cancel() }
+    deinit { statusTask?.cancel() }
 
     public func show(rows: [CandidateRow], pinyin: String, selected: Int, page: Int, totalPages: Int, anchor: NSRect, status: String? = nil) {
-        cancelCaseStatus()
-        let view = CandidateView(rows: rows, pinyin: pinyin, highlighted: selected, footer: status ?? "\(page + 1)/\(totalPages)")
+        cancelStatus()
+        let pageText = "第 \(page + 1)/\(max(1, totalPages)) 页"
+        let footer = status.map { pageText + " · " + $0 } ?? pageText
+        let bounds = visibleBounds(at: anchor)
+        let view = CandidateView(rows: rows, pinyin: pinyin, highlighted: selected, footer: footer, maximumSize: bounds.size)
+        let previousSelection = (panel.contentView?.accessibilitySelectedChildren()?.first as? NSView)?.accessibilityLabel()
         display(view, size: view.preferredSize, anchor: anchor)
+        NSAccessibility.post(element: panel, notification: .layoutChanged)
+        let selection = (view.accessibilitySelectedChildren()?.first as? NSView)?.accessibilityLabel()
+        if selection != previousSelection { NSAccessibility.post(element: view, notification: .selectedChildrenChanged) }
     }
 
-    private func display(_ view: NSView, size: NSSize, anchor: NSRect) {
+    private func visibleBounds(at anchor: NSRect) -> NSRect {
         let screen = NSScreen.screens.first { $0.frame.contains(anchor.origin) } ?? NSScreen.main
-        let bounds = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1000, height: 800)
+        let frame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1000, height: 800)
+        return frame.insetBy(dx: min(8, frame.width / 4), dy: min(8, frame.height / 4))
+    }
+
+    private func display(_ view: NSView, size: NSSize, anchor: NSRect, isStatus: Bool = false) {
+        let bounds = visibleBounds(at: anchor)
+        let size = NSSize(width: min(size.width, bounds.width), height: min(size.height, bounds.height))
         let below = anchor.minY - 4 - size.height
         let y = below >= bounds.minY ? below : anchor.maxY + 4
-        let origin = NSPoint(x: min(max(anchor.minX, bounds.minX), max(bounds.minX, bounds.maxX - size.width)),
-                             y: min(max(y, bounds.minY), max(bounds.minY, bounds.maxY - size.height)))
+        let preferred = isStatus ? statusOrigin(size: size, anchor: anchor, bounds: bounds) : NSPoint(x: anchor.minX, y: y)
+        let origin = NSPoint(x: min(max(preferred.x, bounds.minX), max(bounds.minX, bounds.maxX - size.width)),
+                             y: min(max(preferred.y, bounds.minY), max(bounds.minY, bounds.maxY - size.height)))
         panel.contentView = view
         panel.setFrame(NSRect(origin: origin, size: size), display: true)
         panel.orderFrontRegardless()
+    }
+
+    private func statusOrigin(size: NSSize, anchor: NSRect, bounds: NSRect) -> NSPoint {
+        let gap: CGFloat = 8
+        // AppKit screen coordinates increase upwards. Leave the area below for system hints.
+        let above = anchor.maxY + gap
+        if above + size.height <= bounds.maxY {
+            return NSPoint(x: anchor.minX, y: above)
+        }
+        let sideY = anchor.midY - size.height / 2
+        let right = anchor.maxX + gap
+        if right >= bounds.minX, right + size.width <= bounds.maxX {
+            return NSPoint(x: right, y: sideY)
+        }
+        let left = anchor.minX - gap - size.width
+        if left >= bounds.minX, left + size.width <= bounds.maxX {
+            return NSPoint(x: left, y: sideY)
+        }
+        // On very narrow displays, use the farther edge and avoid the caret vertically if possible.
+        let moreRoomOnRight = bounds.maxX - anchor.maxX >= anchor.minX - bounds.minX
+        let below = anchor.minY - gap - size.height
+        return NSPoint(x: moreRoomOnRight ? bounds.maxX - size.width : bounds.minX,
+                       y: below >= bounds.minY ? below : sideY)
     }
 
     public func show(_ presentation: CandidatePresentation) {
@@ -46,30 +83,43 @@ public final class CandidatePanel: CandidatePresenting {
     }
 
     public func showCaseStatus(uppercaseLocked: Bool) {
-        cancelCaseStatus()
-        let view = CaseStatusView(uppercaseLocked: uppercaseLocked)
-        display(view, size: view.preferredSize, anchor: resolvedAnchor())
+        showStatus(InputStatusView(uppercaseLocked: uppercaseLocked))
+    }
+
+    public func showModeStatus(mode: InputMode) {
+        showStatus(InputStatusView(mode: mode))
+    }
+
+    private func showStatus(_ view: InputStatusView) {
+        cancelStatus()
+        display(view, size: view.preferredSize, anchor: resolvedAnchor(), isStatus: true)
+        NSAccessibility.post(element: view, notification: .announcementRequested, userInfo: [
+            .announcement: view.message, .priority: NSAccessibilityPriorityLevel.medium.rawValue
+        ])
         let identifier = UUID()
-        caseStatusID = identifier
-        caseStatusTask = Task { [weak self] in
+        statusID = identifier
+        statusTask = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(1)) }
             catch { return }
-            guard !Task.isCancelled, let self, self.caseStatusID == identifier else { return }
+            guard !Task.isCancelled, let self, self.statusID == identifier else { return }
             self.hide()
         }
     }
 
     public func hide() {
-        cancelCaseStatus()
+        cancelStatus()
         panel.orderOut(nil)
     }
 
     public func showLoading(pinyin: String) {
-        guard panel.isVisible, let contentView = panel.contentView as? CandidateView else { return }
+        cancelStatus()
         // Keep the window in place, but never present stale candidates as selectable.
-        let view = CandidateView(rows: [], pinyin: pinyin, highlighted: -1, footer: "查询中…")
-        view.setFrameSize(contentView.bounds.size)
-        panel.contentView = view
+        let anchor = resolvedAnchor()
+        let previousHeight = panel.isVisible ? (panel.contentView as? CandidateView)?.bounds.height ?? 80 : 80
+        let view = CandidateView(rows: [], pinyin: pinyin, highlighted: -1, footer: "查询中…",
+                                 maximumSize: visibleBounds(at: anchor).size, minimumHeight: previousHeight)
+        display(view, size: view.preferredSize, anchor: anchor)
+        NSAccessibility.post(element: panel, notification: .layoutChanged)
     }
 
     private func resolvedAnchor() -> NSRect {
@@ -77,9 +127,9 @@ public final class CandidatePanel: CandidatePresenting {
         return rectangle == .zero ? NSRect(origin: NSEvent.mouseLocation, size: NSSize(width: 0, height: 16)) : rectangle
     }
 
-    private func cancelCaseStatus() {
-        caseStatusTask?.cancel()
-        caseStatusTask = nil
-        caseStatusID = nil
+    private func cancelStatus() {
+        statusTask?.cancel()
+        statusTask = nil
+        statusID = nil
     }
 }

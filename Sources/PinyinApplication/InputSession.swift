@@ -4,11 +4,19 @@ import PinyinCore
 /// Owns one host's composition and async work, serialized on the main actor.
 /// Query/page tickets are invalidated before state changes, even if providers ignore cancellation.
 @MainActor public final class InputSession {
+    public enum QueryState: Sendable, Equatable {
+        case idle
+        case querying
+        case ready
+        case selectedTextOnly
+    }
+
     public var mode: InputMode { modeState.mode }
     public var isUppercaseLocked: Bool { modeState.isUppercaseLocked }
     private let modeState: InputModeState
     public private(set) var composition = CompositionState()
     public private(set) var candidates = CandidateList()
+    public private(set) var queryState: QueryState = .idle
     private let provider: any CandidateProviding
     private let translator: any CandidateTranslating
     private let speaker: any SpeechPlaying
@@ -20,6 +28,11 @@ import PinyinCore
     private var translationID: UUID?
     private var queryTask: Task<Void, Never>?
     private var translationTask: Task<Void, Never>?
+    private struct TranslationPage: Equatable {
+        let indices: [Int]
+        let sources: [String]
+    }
+    private var translationPage: TranslationPage?
     private var queuedSelection: Int?
     private var speechStatus: String?
 
@@ -44,26 +57,32 @@ import PinyinCore
     /// the next keyDown. Only the edge changes mode, before any host callback.
     @discardableResult public func handleCapsLock(_ enabled: Bool, modifiers: KeyModifiers = [], host nextHost: any InputHost) -> Bool {
         guard bind(nextHost) else { return false }
-        return observeCapsLock(enabled, modifiers: modifiers)
+        return observeCapsLock(enabled, modifiers: modifiers, isCapsLockEvent: true)
     }
 
-    private func observeCapsLock(_ enabled: Bool, modifiers: KeyModifiers) -> Bool {
-        guard modeState.observeCapsLock(enabled, modifiers: modifiers) else { return false }
+    private func observeCapsLock(_ enabled: Bool, modifiers: KeyModifiers, isCapsLockEvent: Bool) -> Bool {
+        guard modeState.observeCapsLock(enabled, modifiers: modifiers, allowsUppercaseToggle: isCapsLockEvent) else { return false }
+        finishModeChange(showCase: isCapsLockEvent && modifiers == [.shift])
+        return true
+    }
+
+    private func finishModeChange(showCase: Bool) {
         let expectedHost = host
         let expectedHostRevision = hostRevision
         let expectedModeRevision = modeState.revision
         finishComposition()
         // A commit can synchronously switch clients or process another mode
         // change. Only the still-current transition may present its status.
-        if modifiers.contains(.shift), let expectedHost,
+        if let expectedHost,
            host === expectedHost, hostRevision == expectedHostRevision,
            modeState.revision == expectedModeRevision {
-            presenter.showCaseStatus(uppercaseLocked: isUppercaseLocked)
+            if showCase { presenter.showCaseStatus(uppercaseLocked: isUppercaseLocked) }
+            else { presenter.showModeStatus(mode: mode) }
         }
-        return true
     }
 
     public func synchronizeCapsLock(_ enabled: Bool) { modeState.synchronizeCapsLock(enabled) }
+    public func acknowledgeCapsLock(_ enabled: Bool) { modeState.acknowledgeCapsLock(enabled) }
 
     /// Used for mouse clicks as well as mode changes. Does not discard the host.
     public func finishComposition() {
@@ -84,7 +103,7 @@ import PinyinCore
 
     @discardableResult public func handle(_ key: KeyStroke, host nextHost: any InputHost) -> Bool {
         guard bind(nextHost) else { return false }
-        _ = observeCapsLock(key.capsLock, modifiers: key.modifiers)
+        _ = observeCapsLock(key.capsLock, modifiers: key.modifiers, isCapsLockEvent: false)
         guard host === nextHost else { return false }
         if mode == .chinesePinyin, !composition.isEmpty, key.requestsSpeech {
             if !key.isRepeat { speakHighlighted() }
@@ -93,7 +112,7 @@ import PinyinCore
         if key.switchesMode {
             if !key.isRepeat {
                 modeState.toggle()
-                finishComposition()
+                finishModeChange(showCase: false)
             }
             return true
         }
@@ -107,7 +126,11 @@ import PinyinCore
             return true
         }
         if (key.code == 36 || key.code == 76) && !composition.isEmpty { commit(); return true }
-        if key.code == 49 && !composition.isEmpty { select(offset: candidates.highlighted); return true }
+        if key.code == 49 && !composition.isEmpty {
+            if queryState == .selectedTextOnly { commit() }
+            else { select(offset: candidates.highlighted) }
+            return true
+        }
         if !composition.isEmpty, let digit = Int(key.characters), (1...PinyinRules.pageSize).contains(digit) {
             select(offset: digit - 1)
             return true
@@ -122,7 +145,9 @@ import PinyinCore
             translateVisiblePage()
             return true
         }
-        if !composition.isEmpty && (key.code == 125 || key.code == 126) && !candidates.rows.isEmpty {
+        if !composition.isEmpty && (key.code == 125 || key.code == 126) {
+            // Loading and selected-text-only states still own navigation keys.
+            queuedSelection = nil
             stopSpeech()
             candidates.move(by: key.code == 125 ? 1 : -1)
             show()
@@ -176,8 +201,9 @@ import PinyinCore
     }
 
     private func select(offset: Int) {
+        if queryState == .querying { queuedSelection = offset; return }
+        guard queryState == .ready else { return }
         guard let index = candidates.indexOnPage(offset) else {
-            if queryID != nil { queuedSelection = offset }
             return
         }
         guard composition.choose(candidates.rows[index].candidate) else { return }
@@ -188,8 +214,9 @@ import PinyinCore
         invalidateRequests()
         stopSpeech()
         candidates.clear()
+        queryState = composition.isEmpty ? .idle : composition.pending.isEmpty ? .selectedTextOnly : .querying
         host?.setMarkedText(composition.markedText)
-        guard !composition.pending.isEmpty else { presenter.hide(); return }
+        guard queryState == .querying else { show(); return }
         presenter.showLoading(pinyin: composition.markedText)
         let query = composition.pending
         let context = PinyinRules.boundedContext(documentContext + composition.selectedText)
@@ -197,6 +224,7 @@ import PinyinCore
         queryID = ticket
         let provider = provider
         queryTask = Task { [weak self] in
+            guard !Task.isCancelled else { return }
             do {
                 let result = try await provider.candidates(for: query, context: context)
                 guard let self, self.queryID == ticket, !Task.isCancelled else { return }
@@ -220,6 +248,7 @@ import PinyinCore
             ? [CandidateRow(candidate: Candidate(text: query, consumedCount: query.count), translation: .unavailable(issue))]
             : valid.map { CandidateRow(candidate: $0) }
         candidates.replace(rows)
+        queryState = .ready
         let selection = queuedSelection
         queuedSelection = nil
         if let selection, candidates.indexOnPage(selection) != nil {
@@ -232,6 +261,12 @@ import PinyinCore
     }
 
     private func translateVisiblePage() {
+        guard queryState == .ready else { return }
+        let page = TranslationPage(indices: candidates.visibleIndices, sources: candidates.visibleRows.map(\.text))
+        // Highlight changes and paging against a boundary retain the same batch,
+        // including a completed failure. A different page or query may retry it.
+        guard translationPage != page else { return }
+        translationPage = page
         translationTask?.cancel()
         translationTask = nil
         translationID = nil
@@ -244,6 +279,7 @@ import PinyinCore
         translationID = ticket
         let translator = translator
         translationTask = Task { [weak self] in
+            guard !Task.isCancelled else { return }
             let states: [TranslationState]
             do {
                 let text = try await translator.translate(sources)
@@ -270,8 +306,14 @@ import PinyinCore
     }
 
     private func show() {
-        guard !candidates.rows.isEmpty else { presenter.hide(); return }
-        presenter.show(CandidatePresentation(candidates: candidates, markedText: composition.markedText, status: speechStatus))
+        switch queryState {
+        case .querying:
+            presenter.showLoading(pinyin: composition.markedText)
+        case .ready:
+            presenter.show(CandidatePresentation(candidates: candidates, markedText: composition.markedText, status: speechStatus))
+        case .idle, .selectedTextOnly:
+            presenter.hide()
+        }
     }
 
     private func speakHighlighted() {
@@ -295,7 +337,9 @@ import PinyinCore
 
     private func invalidateRequests() {
         queryID = nil
+        queryState = .idle
         translationID = nil
+        translationPage = nil
         queryTask?.cancel(); queryTask = nil
         translationTask?.cancel(); translationTask = nil
         queuedSelection = nil

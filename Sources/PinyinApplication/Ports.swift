@@ -46,6 +46,7 @@ public struct CandidatePresentation {
 @MainActor public protocol CandidatePresenting: AnyObject {
     func show(_ presentation: CandidatePresentation)
     func showLoading(pinyin: String)
+    func showModeStatus(mode: InputMode)
     func showCaseStatus(uppercaseLocked: Bool)
     func hide()
 }

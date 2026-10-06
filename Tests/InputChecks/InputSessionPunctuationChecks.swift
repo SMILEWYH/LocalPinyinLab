@@ -45,10 +45,12 @@ import PinyinApplication
         let fixture = PunctuationFixture()
         let toggle = KeyStroke(code: 49, characters: " ", modifiers: [.control, .shift])
         try checkTrue(fixture.session.handle(toggle, host: fixture.host))
-        try checkTrue(fixture.session.handle(KeyStroke(code: 49, characters: " ", modifiers: [.control, .shift], isRepeat: true), host: fixture.host))
-        try checkFalse(fixture.session.handle(KeyStroke(code: 47, characters: "."), host: fixture.host))
+        fixture.session.acknowledgeCapsLock(true)
+        try checkTrue(fixture.session.handle(KeyStroke(code: 49, characters: " ", modifiers: [.control, .shift], isRepeat: true, capsLock: true), host: fixture.host))
+        try checkFalse(fixture.session.handle(KeyStroke(code: 47, characters: ".", capsLock: true), host: fixture.host))
         try checkEqual(fixture.session.mode, .englishDirect)
-        try checkTrue(fixture.session.handle(toggle, host: fixture.host))
+        try checkTrue(fixture.session.handle(KeyStroke(code: 49, characters: " ", modifiers: [.control, .shift], capsLock: true), host: fixture.host))
+        fixture.session.acknowledgeCapsLock(false)
         try checkTrue(fixture.session.handle(KeyStroke(code: 47, characters: "."), host: fixture.host))
         try checkEqual(fixture.host.committed, ["。"])
     }
@@ -234,6 +236,7 @@ import PinyinApplication
     var isVisible = false
     func show(_ presentation: CandidatePresentation) { isVisible = true }
     func showLoading(pinyin: String) { isVisible = true }
+    func showModeStatus(mode: InputMode) { isVisible = true }
     func showCaseStatus(uppercaseLocked: Bool) { isVisible = true }
     func hide() { isVisible = false }
 }

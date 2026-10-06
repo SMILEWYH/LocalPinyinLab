@@ -32,7 +32,8 @@ public final class PinyinSession: @unchecked Sendable {
                 queue.async { [self] in
                     do {
                         try cancellation.check()
-                        let result = try worker.candidates(for: pinyin, context: context)
+                        let result = try worker.candidates(for: pinyin, context: context,
+                                                          checkCancellation: cancellation.check)
                         try cancellation.check()
                         continuation.resume(returning: result)
                     } catch {

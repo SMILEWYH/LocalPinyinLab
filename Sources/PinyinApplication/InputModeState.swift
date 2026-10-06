@@ -9,24 +9,40 @@ import PinyinCore
 
     public init() {}
 
-    /// Activation establishes a baseline: keys pressed in another input source
-    /// must not change this input method's remembered mode.
-    public func synchronizeCapsLock(_ enabled: Bool) { capsLock = enabled }
+    /// Activation and secure-input recovery adopt the real lock state. A process
+    /// restart or a change made in another input source cannot invert our mode.
+    public func synchronizeCapsLock(_ enabled: Bool) {
+        capsLock = enabled
+        _ = applyCapsLock(enabled)
+    }
 
-    @discardableResult public func observeCapsLock(_ enabled: Bool, modifiers: KeyModifiers = []) -> Bool {
+    /// The adapter records a lock value that it writes for a shortcut or an
+    /// uppercase transition. Its echoed event must not replay that transition.
+    public func acknowledgeCapsLock(_ enabled: Bool) { capsLock = enabled }
+
+    @discardableResult public func observeCapsLock(_ enabled: Bool, modifiers: KeyModifiers = [],
+                                                  allowsUppercaseToggle: Bool = true) -> Bool {
         let previous = capsLock
         capsLock = enabled
-        guard let previous, previous != enabled else { return false }
-        // Modified system shortcuts still update the baseline, so a later key
-        // cannot replay their Caps Lock edge as a mode change.
-        guard modifiers.intersection([.control, .option, .command]).isEmpty else { return false }
-        if modifiers.contains(.shift) {
+        guard previous != enabled else { return false }
+        // Only an actual Shift+Caps edge expresses an uppercase command. A
+        // keyDown may recover a missed lock change, but its Shift is unrelated.
+        if previous != nil, allowsUppercaseToggle, modifiers == [.shift] {
             isUppercaseLocked.toggle()
             mode = .englishDirect
             revision &+= 1
-        } else {
-            toggle()
+            return true
         }
+        return applyCapsLock(enabled)
+    }
+
+    @discardableResult private func applyCapsLock(_ enabled: Bool) -> Bool {
+        let nextMode: InputMode = enabled ? .englishDirect : .chinesePinyin
+        let nextUppercase = enabled && isUppercaseLocked
+        guard mode != nextMode || isUppercaseLocked != nextUppercase else { return false }
+        mode = nextMode
+        isUppercaseLocked = nextUppercase
+        revision &+= 1
         return true
     }
 

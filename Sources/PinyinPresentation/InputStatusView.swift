@@ -1,16 +1,25 @@
 import AppKit
+import PinyinCore
 
 @MainActor
-final class CaseStatusView: NSView {
-    private let message: String
+final class InputStatusView: NSView {
+    let message: String
     private let font = NSFont.systemFont(ofSize: 14, weight: .medium)
     private let horizontalPadding: CGFloat = 12
     private let verticalPadding: CGFloat = 9
 
     override var isFlipped: Bool { true }
 
-    init(uppercaseLocked: Bool) {
-        message = uppercaseLocked ? "ABC · 大写已锁定" : "abc · 已恢复小写"
+    convenience init(uppercaseLocked: Bool) {
+        self.init(message: uppercaseLocked ? "ABC · 大写已锁定" : "abc · 已恢复小写")
+    }
+
+    convenience init(mode: InputMode) {
+        self.init(message: mode == .chinesePinyin ? "中 · 中文拼音" : "abc · English")
+    }
+
+    private init(message: String) {
+        self.message = message
         super.init(frame: .zero)
         appearance = NSAppearance(named: .aqua)
         setFrameSize(preferredSize)

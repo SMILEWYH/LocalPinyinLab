@@ -2,9 +2,10 @@ import AppKit
 import PinyinApplication
 
 extension KeyStroke {
-    @MainActor public init(event: NSEvent) {
+    @MainActor public init(event: NSEvent, capsLockOverride: Bool? = nil) {
         self.init(code: event.keyCode, characters: event.characters ?? "", modifiers: KeyModifiers(event.modifierFlags),
-                  isRepeat: event.isARepeat, capsLock: event.modifierFlags.contains(.capsLock))
+                  isRepeat: event.isARepeat, capsLock: capsLockOverride ?? event.modifierFlags.contains(.capsLock),
+                  capsLockForText: event.modifierFlags.contains(.capsLock))
     }
 }
 
@@ -29,10 +30,11 @@ public enum InputEvent {
         .keyDown, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown
     ]
 
-    @MainActor public init(event: NSEvent) {
+    @MainActor public init(event: NSEvent, capsLockOverride: Bool? = nil) {
         switch event.type {
-        case .keyDown: self = .key(KeyStroke(event: event))
+        case .keyDown: self = .key(KeyStroke(event: event, capsLockOverride: capsLockOverride))
         case .flagsChanged where event.keyCode == 57:
+            // Real modifier edges remain authoritative while an earlier LED update is pending.
             self = .capsLock(event.modifierFlags.contains(.capsLock), modifiers: KeyModifiers(event.modifierFlags))
         case .leftMouseDown, .rightMouseDown, .otherMouseDown: self = .mouseDown
         default: self = .unhandled

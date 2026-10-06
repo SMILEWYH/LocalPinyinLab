@@ -35,18 +35,6 @@ public struct CandidateRow: Sendable, Equatable {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    public var translationText: String {
-        switch translation {
-        case .notRequired: return ""
-        case .pending: return "等待本地翻译"
-        case .ready(let value): return value
-        case .unavailable(.modelsNotInstalled): return "未安装中英离线语言包"
-        case .unavailable(.failed): return "本地翻译暂不可用"
-        case .unavailable(.noCandidates): return "暂无候选，请检查拼音"
-        case .unavailable(.engineUnavailable): return "苹果拼音暂不可用"
-        }
-    }
-
     private static func containsHan(_ text: String) -> Bool {
         text.range(of: "\\p{Han}", options: .regularExpression) != nil
     }

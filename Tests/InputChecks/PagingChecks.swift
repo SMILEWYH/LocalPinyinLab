@@ -130,6 +130,7 @@ import PinyinApplication
     let host = PagingHost()
     let presenter = PagingPresenter()
     let session: InputSession
+    private var physicalCapsLock = false
 
     init() {
         session = InputSession(provider: provider, translator: PagingTranslator(), speaker: PagingSpeaker(), presenter: presenter)
@@ -138,7 +139,11 @@ import PinyinApplication
 
     func press(_ code: UInt16, text: String? = nil, modifiers: KeyModifiers = []) -> Bool {
         let specialCharacters: [UInt16: String] = [123: "\u{F702}", 124: "\u{F703}", 125: "\u{F701}", 126: "\u{F700}", 116: "\u{F72C}", 121: "\u{F72D}"]
-        return session.handle(KeyStroke(code: code, characters: text ?? specialCharacters[code] ?? "", modifiers: modifiers), host: host)
+        let handled = session.handle(KeyStroke(code: code, characters: text ?? specialCharacters[code] ?? "", modifiers: modifiers,
+                                               capsLock: physicalCapsLock), host: host)
+        physicalCapsLock = session.mode == .englishDirect
+        session.acknowledgeCapsLock(physicalCapsLock)
+        return handled
     }
 
     func compose(_ pinyin: String) async throws {
@@ -189,6 +194,7 @@ import PinyinApplication
     var presentation: CandidatePresentation?
     func show(_ presentation: CandidatePresentation) { self.presentation = presentation }
     func showLoading(pinyin: String) { presentation = nil }
+    func showModeStatus(mode: InputMode) {}
     func showCaseStatus(uppercaseLocked: Bool) {}
     func hide() { presentation = nil }
 }

@@ -19,6 +19,11 @@ public final class PinyinWorker {
     deinit { stop() }
 
     public func start() throws {
+        try start(checkCancellation: {})
+    }
+
+    private func start(checkCancellation: () throws -> Void) throws {
+        try checkCancellation()
         if process?.isRunning == true { return }
         stop()
         let child = Process()
@@ -40,7 +45,8 @@ public final class PinyinWorker {
         input = stdinPipe.fileHandleForWriting
         output = stdoutPipe.fileHandleForReading
         do {
-            try WorkerProtocol.decodeReady(readLine())
+            try WorkerProtocol.decodeReady(readLine(checkCancellation: checkCancellation))
+            try checkCancellation()
         } catch {
             stop()
             throw error
@@ -48,20 +54,34 @@ public final class PinyinWorker {
     }
 
     public func candidates(for pinyin: String, context: String = "") throws -> [Candidate] {
+        try candidates(for: pinyin, context: context, checkCancellation: {})
+    }
+
+    // Only the queue that owns this transport touches its process and pipes.
+    // Cancellation is observed here rather than closing a pipe from another thread.
+    func candidates(for pinyin: String, context: String, checkCancellation: () throws -> Void) throws -> [Candidate] {
+        try checkCancellation()
         // Reject invalid queries before starting or restarting a child process.
         // The bounded request also fits into a pipe without a large blocking write.
         var request = try WorkerProtocol.requestData(pinyin: pinyin, context: context)
         request.append(10)
         for attempt in 0..<2 {
             do {
-                try start()
+                try start(checkCancellation: checkCancellation)
+                try checkCancellation()
                 guard let input else { throw PinyinWorkerError.unavailable }
                 try input.write(contentsOf: request)
-                return try WorkerProtocol.decodeCandidates(readLine(), pinyin: pinyin)
+                let result = try WorkerProtocol.decodeCandidates(readLine(checkCancellation: checkCancellation), pinyin: pinyin)
+                try checkCancellation()
+                return result
             } catch {
                 // Discard all buffered bytes before a retry; a response can never
                 // be reused for a different composition or a restarted process.
                 stop()
+                // A cancelled request must never restart its worker or retain a
+                // partially read response for the next composition.
+                if error is CancellationError { throw error }
+                try checkCancellation()
                 if attempt == 1 { throw error }
             }
         }
@@ -86,17 +106,21 @@ public final class PinyinWorker {
         process = nil
     }
 
-    private func readLine() throws -> Data {
+    private func readLine(checkCancellation: () throws -> Void) throws -> Data {
         guard let output else { throw PinyinWorkerError.unavailable }
         let deadline = DispatchTime.now().uptimeNanoseconds + 3_000_000_000
         while true {
+            try checkCancellation()
             if let frame = try WorkerProtocol.takeFrame(from: &buffer) { return frame }
             let now = DispatchTime.now().uptimeNanoseconds
             guard now < deadline else { throw PinyinWorkerError.timedOut }
             var descriptor = pollfd(fd: output.fileDescriptor, events: Int16(POLLIN), revents: 0)
-            let result = poll(&descriptor, 1, Int32(max(1, (deadline - now) / 1_000_000)))
+            // Short waits make cancellation responsive without sharing descriptors
+            // across threads; the original absolute response deadline still applies.
+            let waitMilliseconds = min(50, max(1, (deadline - now) / 1_000_000))
+            let result = poll(&descriptor, 1, Int32(waitMilliseconds))
             if result < 0 && errno == EINTR { continue }
-            if result == 0 { throw PinyinWorkerError.timedOut }
+            if result == 0 { continue }
             guard result > 0 else { throw PinyinWorkerError.unavailable }
             var bytes = [UInt8](repeating: 0, count: 8192)
             let count = Darwin.read(output.fileDescriptor, &bytes, bytes.count)
