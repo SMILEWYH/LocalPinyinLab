@@ -1,6 +1,6 @@
 # LocalPinyinLab 架构与状态约束
 
-本文包含 2026-10-06 的输入状态、取消、展示与构建优化。功能说明以 [README](../README.md) 为入口；模块依赖以 [Package.swift](../Package.swift) 为准；构建和语言包准备见 [SETUP](SETUP.md)。
+本文包含 2026-10-06 的输入状态、取消、展示、构建及多语言设置优化。功能说明以 [README](../README.md) 为入口；模块依赖以 [Package.swift](../Package.swift) 为准；构建和语言包准备见 [SETUP](SETUP.md)。
 
 ## 1. 模块与依赖
 
@@ -10,6 +10,8 @@ flowchart TD
     App --> Infrastructure[PinyinInfrastructure 苹果服务与进程]
     App --> Presentation[PinyinPresentation AppKit 显示与事件适配]
     App --> Core[PinyinCore 组合与候选规则]
+    Settings[PinyinSettings 使用说明与语言包] --> Infrastructure
+    Settings --> Core
     Infrastructure --> Application
     Infrastructure --> Core
     Presentation --> Application
@@ -36,6 +38,7 @@ SwiftPM 使用 Swift 6 语言模式与明确的访问级别。应用的所有会
 | `CandidateTextPolicy.swift` | 候选文本可用性；过滤表情及含表情的混合项，保留数字、普通符号及扩展汉字 |
 | `Candidate.swift` | 不可变候选文本与原始拼音消费长度，输入模式 |
 | `TranslationState.swift` | 候选展示行及互斥的翻译状态；可朗读内容判定 |
+| `TranslationLanguage.swift` | 15 种目标语言的标识、显示名称与语音地区偏好；系统支持情况由运行时检查 |
 | `CandidateList.swift` | 唯一的绝对选中索引、页切换与有界行更新 |
 
 `Candidate` 是外部引擎返回的数据值，构造本身不保证适用于某个组合。实际接纳分两层验证：worker 解码验证 reading 是当前输入前缀；输入会话再次拒绝空白文本、表情及越界消费长度。过滤发生在分页/翻译之前；整条候选移除，不裁剪文字或改变消费长度。最终 `CompositionState.choose` 再验证一次，失败不会修改状态。替换引擎时应遵守同样的前缀契约。
@@ -49,13 +52,13 @@ SwiftPM 使用 Swift 6 语言模式与明确的访问级别。应用的所有会
 | 端口 | 约定 |
 | --- | --- |
 | `CandidateProviding` | 预热和候选查询；按原顺序返回候选，长度对应请求拼音的前缀 |
-| `CandidateTranslating` | 返回数量与输入一致、顺序一致的完整译文批次，否则抛错 |
-| `TranslationBackend` | 返回携带批次请求标识的响应，顺序可以不同 |
-| `SpeechPlaying` | 播放明确传入的译文，报告是否有可用声音；可以随时停止 |
+| `CandidateTranslating` | 按显式目标语言返回数量与输入一致、顺序一致的完整译文批次，否则抛错 |
+| `TranslationBackend` | 接收目标语言快照，返回携带批次请求标识的响应，顺序可以不同 |
+| `SpeechPlaying` | 按显式语言播放译文，报告是否有对应声音；可以随时停止 |
 | `InputHost` | 读取有限前文、更新 marked text、提交文本 |
 | `CandidatePresenting` | 显示不可变的当前页快照、加载状态、短暂中英模式/大小写提示或隐藏 |
 
-`TranslationService` 负责去重、响应校验、顺序恢复及内存缓存；苹果翻译框架只是其后端。输入会话不读取系统模型状态，也不自行实现缓存；未安装模型通过 `TranslationFailure.modelsNotInstalled` 映射到明确的展示状态。
+`TranslationService` 负责去重、响应校验、顺序恢复及按目标语言隔离的内存缓存；苹果翻译框架只是其后端。输入会话不读取系统模型状态，也不自行实现缓存；未安装模型通过 `TranslationFailure.modelsNotInstalled` 映射到明确的展示状态。
 
 `InputSession.QueryState` 明确区分 `idle / querying / ready / selectedTextOnly`：候选列表为空不能用于推断查询是否结束。组合存在时上下方向键始终由会话处理；只剩已选中文时空格直接提交。普通中英切换和大写切换都显示约 1 秒的状态提示；提示采用独立定位，优先放光标上方，顶部空间不足时向左右侧避让，候选窗口保持原有定位。宿主同步重入改变会话或模式后，旧提示不再显示。
 
@@ -65,12 +68,21 @@ SwiftPM 使用 Swift 6 语言模式与明确的访问级别。应用的所有会
 - `PinyinWorker` 管理进程、管道、读取期限、重试和回收。同步 API 仅供串行队列或独占诊断使用；它不声明 `Sendable`。
 - `WorkerProtocol` 是包内可见的编码/解码与分帧逻辑，明确错误且不把输入文字装入错误对象。
 - `ApplePinyinEngine` 的独立查询创建同一种 `PinyinWorker`，使用 `defer` 清理；不再保留另一套无界管道实现。
-- `AppleTranslator` 只使用已安装模型，并把 Translation 框架的非 Sendable 对象封闭在异步执行函数内部。
-- `EnglishSpeaker` 只管理系统语音及声音选择，不再处理快捷键或候选页索引。
+- `AppleTranslator` 按请求的目标语言只使用已安装模型，并把 Translation 框架的非 Sendable 对象封闭在异步执行函数内部；不请求下载。
+- `LocalSpeechPlayer` 每次查询当前本地 Apple 声音，优先目标地区，再选同语言声音；无对应语言声音时返回不可用，不回退到英语。它只管理朗读及声音选择，不处理快捷键或候选页索引。
+- `TranslationPreferences` 使用固定的 `local.pinyinlab.preferences` CFPreferences 域共享目标语言，读取前同步，默认英语；保存同步失败会抛错。保存成功后通过 `DistributedNotificationCenter` 通知失效，接收方重新读取并校验偏好，不直接采用通知中的值；无需 App Group entitlement。
 - `CapsLockController` 在系统边界读写 IOHID Caps Lock 状态。快捷键和大写锁定改变模式后，由仍处于活动状态的 IMK 宿主同步系统锁：英文为亮灯，中文为灭灯。写入前只确认预期基线，避免系统异步回声重复切换；普通 keyDown 的旧 flags 在写入等待期间及已确认的旧事件范围内不会覆盖新模式，真实 Caps 事件仍可表达新的操作。写入通过非阻塞读回确认，失效宿主/安全输入/切换输入源会终止旧确认。
 - `SingleInstanceLock` 与 `InputSourceRegistration` 保持独立系统边界。取得锁后才创建 IMKServer，锁文件不删除。
 
-`Worker/main.m` 是正式运行组件。每次查询前后重置引擎与上下文，继续禁止词频学习、联系人和附加词库；沙盒规则位于 `Worker/pinyin.sb`。`Probes/` 保留诊断及图标生成工具；面向用户的语言包准备应用位于 `Tools/TranslationSetup/`，同时打包到输入法资源内并提供菜单入口。
+`Worker/main.m` 是正式运行组件。每次查询前后重置引擎与上下文，继续禁止词频学习、联系人和附加词库；沙盒规则位于 `Worker/pinyin.sb`。`Probes/` 保留诊断及图标生成工具。
+
+独立的 SwiftUI 设置应用位于 `Tools/PinyinSettings/`，使用 `local.pinyinlab.settings` 标识并安装到“应用程序”，不依赖或创建 IMKServer。侧栏包含“使用说明”和“语言包”：前者集中说明操作、展示目标语言朗读声音及提示，并提供系统键盘和辅助功能设置入口；后者选择目标语言，显示运行时支持与语言包状态。两页共享同一个 `LanguagePacksModel`，目标选择与声音信息保持同步，朗读说明集中于“目标语言朗读”卡片。点击语言即保存并跨进程生效；语言包准备仅由用户点击触发。输入法菜单优先打开已安装的设置 App，找不到时回退到 `Contents/Resources/PinyinSettings.app` 中的副本。关闭设置应用不影响输入服务生命周期。
+
+目标语言变化时，`InputSession` 保留组合和候选页，使旧翻译请求失效、清除译文并停止朗读，再请求当前页的新语言译文。设置应用的语言包检查与准备也使用语言快照和请求标识，迟到结果不能覆盖新选择。
+
+每次准备使用以请求标识区分的独立 SwiftUI 任务视图，重试同一语言也创建新翻译会话。任务位于设置根视图，切换页面不会中断准备；关闭系统提示或任务取消后释放忙碌状态。`prepareTranslation()` 返回不代表下载完成，安装状态由系统查询确认。
+
+语言包安装状态只保留本次系统查询结果，不写入偏好。设置应用启动、回到前台或点击“检查全部语言包”时刷新全部 15 种语言；下载完成后更新当前状态并刷新列表。语言卡片分两行展示名称与安装状态：“已安装”配绿色勾，“未安装”配灰色下载图标；当前选择独立使用强调色边框和“当前使用”徽标，不覆盖安装状态。
 
 ### Presentation 与应用装配
 
@@ -112,7 +124,7 @@ SwiftPM 使用 Swift 6 语言模式与明确的访问级别。应用的所有会
 
 `notRequired / pending / ready / unavailable` 互斥。只有含汉字、成功且非空白的译文可以朗读。返回译文保留原始内容，不拆分多义项、不做自定义词条替换。
 
-每个控制器有独立的 `AppleTranslator → TranslationService` 实例；最多 256 个不同源文本的内存 FIFO 条目。缓存命中不刷新存入顺序，不写磁盘。重复请求在单批中去重，返回结果仍保留调用方的重复位置及原顺序。
+每个控制器有独立的 `AppleTranslator → TranslationService` 实例；以“目标语言 + 源文本”为键，总计最多 256 个内存 FIFO 条目，不同语言之间不能复用译文。缓存命中不刷新存入顺序，不写磁盘。重复请求在单批中去重，返回结果仍保留调用方的重复位置及原顺序。
 
 批次在挂起前复制本次命中值；其它批次在等待期间淘汰缓存不会破坏当前结果。外部响应的标识必须非空、唯一、属于本批，且覆盖所有请求；译文不得为空白。全部校验成功且任务未取消后才一次写入缓存，不接受部分成功。
 
@@ -132,15 +144,15 @@ sequenceDiagram
     Engine-->>Session: 候选或错误
     Session->>Session: 校验查询标识与候选
     Session->>View: 当前页快照
-    Session->>Translation: 当前页汉字候选
+    Session->>Translation: 当前页汉字候选 + 目标语言快照
     Translation-->>Session: 完整译文或错误
     Session->>Session: 校验翻译请求标识
     Session->>View: 补充译文快照
 ```
 
-查询与翻译使用不同的 UUID 标识，不能以“任务已 cancel”作为唯一有效性判断。输入改变会清除查询和翻译标识；翻页会替换翻译标识，因此从第 1 页翻到第 2 页再回第 1 页，也不会接受第一次第 1 页的迟到响应。
+查询与翻译使用不同的 UUID 标识，不能以“任务已 cancel”作为唯一有效性判断。输入改变会清除查询和翻译标识；翻页或切换目标语言会替换翻译标识，因此从第 1 页翻到第 2 页再回第 1 页，也不会接受第一次第 1 页的迟到响应。
 
-同一可见页的候选索引与源文本构成翻译身份；仅移动高亮不取消或重复请求。失败后也不因同页导航重试，离开并返回该页或更新输入才允许再次请求。
+同一可见页的目标语言、候选索引与源文本构成翻译身份；仅移动高亮不取消或重复请求。失败后也不因同页导航重试，离开并返回该页、更新输入或切换目标语言才允许再次请求。
 
 worker 的取消通过线程安全标记传入传输层，握手和读帧至多每 50 ms 检查一次。取消后在原串行队列回收整个 worker 并清空帧缓冲，直接抛出取消错误，不重试旧查询。新请求使用新管道，不能复用迟到半帧。单次读取期限仍为 3 秒，非取消通信错误最多重启一次；停止时先 TERM，100 ms 后仍运行则 KILL，并回收本项目子进程。50 ms 是检查间隔，不是包含系统调度和进程回收的总取消上限；启动握手与查询读取也各有期限。
 
@@ -158,13 +170,13 @@ worker 的取消通过线程安全标记传入传输层，握手和读帧至多�
 | 要扩展的能力 | 修改点 | 必须保持 |
 | --- | --- | --- |
 | 替换或增加候选引擎 | 实现 `CandidateProviding`，在 InputController 装配 | 原顺序、有效前缀消费、取消后的结果隔离 |
-| 替换翻译实现 | 实现 `TranslationBackend` 复用 TranslationService，或直接实现 CandidateTranslating | 标识/完整性与源顺序，不自动将提示当译文 |
+| 替换翻译实现 | 实现 `TranslationBackend` 复用 TranslationService，或直接实现 CandidateTranslating | 目标语言隔离、标识/完整性与源顺序，不自动将提示当译文 |
 | 修改候选界面 | 实现 CandidatePresenting，消费 CandidatePresentation | 不在视图修改组合或推断查询有效性 |
 | 替换宿主用于其他平台 | 实现 InputHost，提供 KeyStroke | marked text/提交一致性，宿主切换生命周期 |
 | 增加快捷键 | 修改 KeyStroke 或 InputSession 的行为及事件映射 | 不把宿主应处理的组合键吞掉 |
-| 增加语音设置 | 替换 SpeechPlaying 或配置 EnglishSpeaker | 仅朗读就绪译文，交互变化时停止播放 |
+| 增加语音设置 | 替换 SpeechPlaying 或配置 LocalSpeechPlayer | 仅用对应语言声音朗读就绪译文，交互变化时停止播放 |
 
-目前没有实现插件加载、设置持久化或动态词库；中英模式与系统 Caps Lock 灯同步，激活和重启时采用实际锁状态；大写锁定仅在当前服务进程内共享，进程重启或灯灭时解除。Caps Lock 是系统状态，会被其他输入源观察到；本输入法只在自身激活且处理模式切换时写入，不在后台改动它。接口提供扩展边界，不代表其他功能已经存在。9 项页长同时决定数字键选择和 UI 标号，修改时必须一起检查交互与界面，不能当作任意运行时配置。
+目标翻译语言已持久化；目前没有实现插件加载或动态词库。中英模式与系统 Caps Lock 灯同步，激活和重启时采用实际锁状态；大写锁定仅在当前服务进程内共享，进程重启或灯灭时解除。Caps Lock 是系统状态，会被其他输入源观察到；本输入法只在自身激活且处理模式切换时写入，不在后台改动它。接口提供扩展边界，不代表其他功能已经存在。9 项页长同时决定数字键选择和 UI 标号，修改时必须一起检查交互与界面，不能当作任意运行时配置。
 
 ## 5. 构建
 
@@ -172,7 +184,7 @@ worker 的取消通过线程安全标记传入传输层，握手和读帧至多�
 bash Scripts/build.sh
 ```
 
-`Scripts/common.sh` 集中 SwiftPM 构建目录、arm64 架构和配置，默认 release；可用 `CONFIGURATION=debug` 运行同一套脚本。默认输出到 `~/Library/Caches/LocalPinyinLab/build/LocalPinyin.app`，通过 `LOCALPINYIN_BUILD_ROOT` 可指定其他非同步目录。worker、内嵌语言包准备工具、资源和 app 逐层 ad-hoc 签名并严格验证后，整体替换旧构建包，失败或可处理的中断会恢复旧包。构建不会安装或修改当前输入源。
+`Scripts/common.sh` 集中 SwiftPM 构建目录、arm64 架构和配置，默认 release；可用 `CONFIGURATION=debug` 运行同一套脚本。默认输出到 `~/Library/Caches/LocalPinyinLab/build/`，包含 `LocalPinyin.app` 和普通前台应用 `PinyinSettings.app`；通过 `LOCALPINYIN_BUILD_ROOT` 可指定其他非同步目录。设置应用使用单独生成的 `.icns` 图标，不修改输入法菜单图标。worker、内嵌设置应用、资源和 app 逐层 ad-hoc 签名并严格验证后，整体替换旧构建包，失败或可处理的中断会恢复旧包。`Scripts/build-settings.sh` 可单独构建设置应用；构建不会安装或修改当前输入源。
 
 输入、worker 和展示检查可在只有 Command Line Tools 的环境下运行：
 

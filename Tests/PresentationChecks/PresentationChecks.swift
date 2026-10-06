@@ -43,17 +43,25 @@ struct PresentationChecks {
         require(loading.accessibilityLabel()?.contains("查询中") == true, "loading must have accessible status")
         require((loading.accessibilitySelectedChildren() ?? []).isEmpty, "loading must not expose stale selected candidates")
         require(loading.preferredSize.height == 160, "loading should preserve the preceding window height")
-        for view in [shortView, expanded, constrained, narrow, loading] { checkFrames(view) }
+        let arabic = CandidateView(rows: [CandidateRow(candidate: Candidate(text: "你好", consumedCount: 2),
+                                                       translation: .ready("مرحبًا بك"))],
+                                   pinyin: "nihao", highlighted: 0, footer: "阿拉伯语译文 · 第 1/1 页",
+                                   translationLanguage: .arabic)
+        require(selectedRow(arabic).accessibilityLabel()?.contains("阿拉伯语译文：مرحبًا بك") == true,
+                "AX must announce the selected target language and preserve right-to-left text")
+        let missing = CandidateRow(candidate: Candidate(text: "你好", consumedCount: 2), translation: .unavailable(.modelsNotInstalled))
+        require(missing.translationText(for: .japanese).contains("日语"), "missing-model message must name the selected language")
+        for view in [shortView, expanded, constrained, narrow, loading, arabic] { checkFrames(view) }
 
         let directory: URL?
         if let flag = CommandLine.arguments.firstIndex(of: "--render-directory"), CommandLine.arguments.indices.contains(flag + 1) {
             directory = URL(fileURLWithPath: CommandLine.arguments[flag + 1], isDirectory: true)
             try FileManager.default.createDirectory(at: directory!, withIntermediateDirectories: true)
         } else { directory = nil }
-        for (name, view) in [("pending", shortView), ("translated", expanded), ("short-display", constrained), ("narrow-display", narrow), ("loading", loading)] {
+        for (name, view) in [("pending", shortView), ("translated", expanded), ("short-display", constrained), ("narrow-display", narrow), ("loading", loading), ("arabic", arabic)] {
             try render(view, name: name, directory: directory)
         }
-        print("Presentation checks passed: native Caps Lock override/edge events, bounded/stable layout, expansion, original row indices, AX state, offscreen rendering (5 cases).")
+        print("Presentation checks passed: native Caps Lock override/edge events, bounded/stable layout, expansion, original row indices, target-language AX state, offscreen rendering (6 cases).")
     }
 
     @MainActor private static func checkNativeCapsLockEvents() {

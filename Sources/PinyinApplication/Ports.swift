@@ -9,13 +9,13 @@ import PinyinCore
 
 @MainActor public protocol CandidateTranslating: AnyObject {
     /// Returns one result per source, preserving order. Partial batches must throw.
-    func translate(_ sources: [String]) async throws -> [String]
+    func translate(_ sources: [String], to language: TranslationLanguage) async throws -> [String]
 }
 
 public enum TranslationFailure: Error { case modelsNotInstalled, invalidResponse }
 
 @MainActor public protocol SpeechPlaying: AnyObject {
-    func speak(_ text: String) -> Bool
+    func speak(_ text: String, language: TranslationLanguage) -> Bool
     func stop()
 }
 
@@ -32,14 +32,17 @@ public struct CandidatePresentation {
     public let page: Int
     public let totalPages: Int
     public let status: String?
+    public let translationLanguage: TranslationLanguage
 
-    public init(candidates: CandidateList, markedText: String, status: String? = nil) {
+    public init(candidates: CandidateList, markedText: String, status: String? = nil,
+                translationLanguage: TranslationLanguage = .english) {
         rows = candidates.visibleRows
         highlighted = candidates.highlighted
         page = candidates.page
         totalPages = candidates.totalPages
         self.markedText = markedText
         self.status = status
+        self.translationLanguage = translationLanguage
     }
 }
 

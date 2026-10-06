@@ -17,6 +17,7 @@ import PinyinCore
     public private(set) var composition = CompositionState()
     public private(set) var candidates = CandidateList()
     public private(set) var queryState: QueryState = .idle
+    public private(set) var translationLanguage: TranslationLanguage
     private let provider: any CandidateProviding
     private let translator: any CandidateTranslating
     private let speaker: any SpeechPlaying
@@ -29,6 +30,7 @@ import PinyinCore
     private var queryTask: Task<Void, Never>?
     private var translationTask: Task<Void, Never>?
     private struct TranslationPage: Equatable {
+        let language: TranslationLanguage
         let indices: [Int]
         let sources: [String]
     }
@@ -38,12 +40,13 @@ import PinyinCore
 
     public init(provider: any CandidateProviding, translator: any CandidateTranslating,
                 speaker: any SpeechPlaying, presenter: any CandidatePresenting,
-                modeState: InputModeState = InputModeState()) {
+                modeState: InputModeState = InputModeState(), translationLanguage: TranslationLanguage = .english) {
         self.provider = provider
         self.translator = translator
         self.speaker = speaker
         self.presenter = presenter
         self.modeState = modeState
+        self.translationLanguage = translationLanguage
     }
 
     deinit { queryTask?.cancel(); translationTask?.cancel() }
@@ -51,6 +54,20 @@ import PinyinCore
     public func activate(capsLock: Bool? = nil) {
         if let capsLock { modeState.synchronizeCapsLock(capsLock) }
         provider.warm()
+    }
+
+    /// Retarget translations without losing the current composition or page.
+    /// Query tickets stay valid; a query still loading uses the new target.
+    public func setTranslationLanguage(_ language: TranslationLanguage) {
+        guard translationLanguage != language else { return }
+        translationLanguage = language
+        invalidateTranslationRequest()
+        stopSpeech()
+        candidates.resetTranslations()
+        if queryState == .ready {
+            show()
+            translateVisiblePage()
+        }
     }
 
     /// The OS can deliver the same modifier state more than once, including on
@@ -262,14 +279,13 @@ import PinyinCore
 
     private func translateVisiblePage() {
         guard queryState == .ready else { return }
-        let page = TranslationPage(indices: candidates.visibleIndices, sources: candidates.visibleRows.map(\.text))
+        let language = translationLanguage
+        let page = TranslationPage(language: language, indices: candidates.visibleIndices, sources: candidates.visibleRows.map(\.text))
         // Highlight changes and paging against a boundary retain the same batch,
         // including a completed failure. A different page or query may retry it.
         guard translationPage != page else { return }
+        invalidateTranslationRequest()
         translationPage = page
-        translationTask?.cancel()
-        translationTask = nil
-        translationID = nil
         let indices = candidates.visibleIndices.filter {
             candidates.rows[$0].needsTranslation && candidates.rows[$0].speechText == nil
         }
@@ -282,7 +298,7 @@ import PinyinCore
             guard !Task.isCancelled else { return }
             let states: [TranslationState]
             do {
-                let text = try await translator.translate(sources)
+                let text = try await translator.translate(sources, to: language)
                 guard text.count == sources.count, text.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
                     throw TranslationFailure.invalidResponse
                 }
@@ -292,7 +308,7 @@ import PinyinCore
             } catch {
                 states = sources.map { _ in .unavailable(.failed) }
             }
-            guard let self, self.translationID == ticket, !Task.isCancelled else { return }
+            guard let self, self.translationID == ticket, self.translationLanguage == language, !Task.isCancelled else { return }
             self.translationTask = nil
             self.translationID = nil
             let oldSpeech = self.candidates.selectedRow?.speechText
@@ -310,7 +326,8 @@ import PinyinCore
         case .querying:
             presenter.showLoading(pinyin: composition.markedText)
         case .ready:
-            presenter.show(CandidatePresentation(candidates: candidates, markedText: composition.markedText, status: speechStatus))
+            presenter.show(CandidatePresentation(candidates: candidates, markedText: composition.markedText, status: speechStatus,
+                                                 translationLanguage: translationLanguage))
         case .idle, .selectedTextOnly:
             presenter.hide()
         }
@@ -319,7 +336,7 @@ import PinyinCore
     private func speakHighlighted() {
         stopSpeech()
         if let text = candidates.selectedRow?.speechText {
-            if !speaker.speak(text) { speechStatus = "未找到本地英语声音" }
+            if !speaker.speak(text, language: translationLanguage) { speechStatus = "未找到本地\(translationLanguage.displayName)声音" }
         } else { speechStatus = "当前项尚无可朗读译文" }
         show()
     }
@@ -338,11 +355,16 @@ import PinyinCore
     private func invalidateRequests() {
         queryID = nil
         queryState = .idle
+        queryTask?.cancel(); queryTask = nil
+        invalidateTranslationRequest()
+        queuedSelection = nil
+    }
+
+    private func invalidateTranslationRequest() {
         translationID = nil
         translationPage = nil
-        queryTask?.cancel(); queryTask = nil
-        translationTask?.cancel(); translationTask = nil
-        queuedSelection = nil
+        translationTask?.cancel()
+        translationTask = nil
     }
 
     private func clear() {

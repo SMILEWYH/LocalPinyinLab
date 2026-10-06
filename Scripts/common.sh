@@ -13,19 +13,25 @@ mkdir -p "$BUILD_ROOT"
 SWIFT_FLAGS=(--scratch-path "$BUILD_ROOT/swift" --configuration "${CONFIGURATION:-release}" --arch arm64)
 BIN_DIR=$(swift build "${SWIFT_FLAGS[@]}" --show-bin-path)
 
-translation_setup_bundle() {
+settings_bundle() {
     local bundle="$1"
-    mkdir -p "$bundle/Contents/MacOS"
-    cp "$BIN_DIR/TranslationSetup" "$bundle/Contents/MacOS/TranslationSetup"
+    mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
+    cp "$BIN_DIR/PinyinSettings" "$bundle/Contents/MacOS/PinyinSettings"
+    "$BIN_DIR/settings-icon" "$bundle/Contents/Resources/PinyinSettings.icns"
     cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>local.pinyinlab.translation-setup</string>
-<key>CFBundleName</key><string>本地翻译准备</string>
-<key>CFBundleExecutable</key><string>TranslationSetup</string>
+<key>CFBundleIdentifier</key><string>local.pinyinlab.settings</string>
+<key>CFBundleName</key><string>拼音设置</string>
+<key>CFBundleDisplayName</key><string>拼音设置</string>
+<key>CFBundleExecutable</key><string>PinyinSettings</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleVersion</key><string>9</string>
+<key>CFBundleShortVersionString</key><string>1.3.5</string>
+<key>CFBundleIconFile</key><string>PinyinSettings.icns</string>
+<key>CFBundleDevelopmentRegion</key><string>zh-Hans</string>
+<key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
 <key>LSMinimumSystemVersion</key><string>26.0</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
@@ -40,7 +46,7 @@ PLIST
 publish_bundle() (
     local staged="$1" name="$2" destination backup committed=false
     case "$name" in
-        LocalPinyin.app|TranslationSetup.app) ;;
+        LocalPinyin.app|PinyinSettings.app) ;;
         *) echo "Unexpected generated bundle: $name" >&2; return 1 ;;
     esac
     destination="$BUILD_ROOT/$name"

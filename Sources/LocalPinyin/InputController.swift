@@ -20,9 +20,15 @@ import PinyinPresentation
     private lazy var session = InputSession(
         provider: PinyinSession.shared,
         translator: AppleTranslator(),
-        speaker: EnglishSpeaker(),
+        speaker: LocalSpeechPlayer(),
         presenter: CandidatePanel(anchor: { [weak self] in self?.host?.anchor ?? .zero }),
-        modeState: InputController.modeState)
+        modeState: InputController.modeState,
+        translationLanguage: TranslationPreferences.targetLanguage)
+
+    @objc private func translationLanguageDidChange(_ notification: Notification) {
+        guard isActive else { return }
+        session.setTranslationLanguage(TranslationPreferences.targetLanguage)
+    }
 
     override func recognizedEvents(_ sender: Any!) -> Int {
         Int(InputEvent.recognizedEvents.rawValue)
@@ -35,7 +41,7 @@ import PinyinPresentation
         nonisolated(unsafe) var result: NSMenu?
         MainActor.assumeIsolated {
             let menu = NSMenu(title: "拼音")
-            let item = NSMenuItem(title: "中英离线语言包…", action: #selector(openTranslationSetup(_:)), keyEquivalent: "")
+            let item = NSMenuItem(title: "拼音设置…", action: #selector(openSettings(_:)), keyEquivalent: "")
             item.target = controller
             menu.addItem(item)
             result = menu
@@ -43,13 +49,20 @@ import PinyinPresentation
         return result
     }
 
-    @objc private func openTranslationSetup(_ sender: Any?) {
-        guard let resources = Bundle.main.resourceURL else { return }
-        let helper = resources.appendingPathComponent("TranslationSetup.app")
-        if !NSWorkspace.shared.open(helper) {
+    @objc private func openSettings(_ sender: Any?) {
+        let applications = [URL(fileURLWithPath: "/Applications", isDirectory: true),
+                            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true)]
+        var locations = applications.flatMap { directory in
+            ["拼音设置.app", "PinyinSettings.app"].map { directory.appendingPathComponent($0) }
+        }
+        if let resources = Bundle.main.resourceURL {
+            locations.append(resources.appendingPathComponent("PinyinSettings.app"))
+        }
+        let settings = locations.first { Bundle(url: $0)?.bundleIdentifier == "local.pinyinlab.settings" }
+        if settings.map({ NSWorkspace.shared.open($0) }) != true {
             let alert = NSAlert()
-            alert.messageText = "无法打开语言包准备工具"
-            alert.informativeText = "请重新构建并安装完整的拼音应用，然后重试。"
+            alert.messageText = "无法打开拼音设置"
+            alert.informativeText = "请重新安装完整的拼音输入法和“拼音设置”应用，然后重试。"
             alert.runModal()
         }
     }
@@ -61,6 +74,13 @@ import PinyinPresentation
         MainActor.assumeIsolated {
             controller.lifecycleRevision &+= 1
             controller.isActive = true
+            let notifications = DistributedNotificationCenter.default()
+            notifications.removeObserver(controller, name: TranslationPreferences.didChangeNotification,
+                                         object: TranslationPreferences.notificationObject)
+            notifications.addObserver(controller, selector: #selector(translationLanguageDidChange(_:)),
+                                      name: TranslationPreferences.didChangeNotification,
+                                      object: TranslationPreferences.notificationObject, suspensionBehavior: .deliverImmediately)
+            controller.session.setTranslationLanguage(TranslationPreferences.targetLanguage)
             controller.cancelCapsSync()
             controller.session.activate(capsLock: controller.capsLockController.isEnabled()
                 ?? NSEvent.modifierFlags.contains(.capsLock))
@@ -223,6 +243,8 @@ import PinyinPresentation
         MainActor.assumeIsolated {
             controller.lifecycleRevision &+= 1
             controller.isActive = false
+            DistributedNotificationCenter.default().removeObserver(controller,
+                name: TranslationPreferences.didChangeNotification, object: TranslationPreferences.notificationObject)
             controller.cancelCapsSync()
             controller.host = nil
             controller.session.deactivate()

@@ -1,4 +1,5 @@
 import Foundation
+import PinyinCore
 
 /// A batch-local identifier keeps response order independent of request order.
 public struct TranslationRequest: Sendable, Equatable {
@@ -23,7 +24,7 @@ public struct TranslationResponse: Sendable, Equatable {
 
 @MainActor
 public protocol TranslationBackend: AnyObject {
-    func translations(for requests: [TranslationRequest]) async throws -> [TranslationResponse]
+    func translations(for requests: [TranslationRequest], to language: TranslationLanguage) async throws -> [TranslationResponse]
 }
 
 /// A per-session, memory-only FIFO cache. A failed or cancelled batch never
@@ -32,8 +33,12 @@ public protocol TranslationBackend: AnyObject {
 public final class TranslationService: CandidateTranslating {
     private let backend: any TranslationBackend
     private let cacheCapacity: Int
-    private var cache: [String: String] = [:]
-    private var insertionOrder: [String] = []
+    private struct CacheKey: Hashable {
+        let language: TranslationLanguage
+        let source: String
+    }
+    private var cache: [CacheKey: String] = [:]
+    private var insertionOrder: [CacheKey] = []
 
     public init(backend: any TranslationBackend, cacheCapacity: Int = 256) {
         precondition(cacheCapacity > 0, "Translation cache capacity must be positive")
@@ -41,7 +46,7 @@ public final class TranslationService: CandidateTranslating {
         self.cacheCapacity = cacheCapacity
     }
 
-    public func translate(_ sources: [String]) async throws -> [String] {
+    public func translate(_ sources: [String], to language: TranslationLanguage) async throws -> [String] {
         try Task.checkCancellation()
         // Actor reentrancy allows another batch to evict these entries while the
         // backend is running. Resolve this call against its own snapshot.
@@ -50,7 +55,7 @@ public final class TranslationService: CandidateTranslating {
         var additions: [(String, String)] = []
         var seen = Set<String>()
         for source in sources where seen.insert(source).inserted {
-            if let translation = cache[source] {
+            if let translation = cache[CacheKey(language: language, source: source)] {
                 resolved[source] = translation
             } else {
                 missing.append(source)
@@ -61,7 +66,7 @@ public final class TranslationService: CandidateTranslating {
             let requests = missing.enumerated().map {
                 TranslationRequest(identifier: String($0.offset), source: $0.element)
             }
-            let responses = try await backend.translations(for: requests)
+            let responses = try await backend.translations(for: requests, to: language)
             try Task.checkCancellation()
             let expected = Set(requests.map(\.identifier))
             var indexed: [String: String] = [:]
@@ -94,8 +99,9 @@ public final class TranslationService: CandidateTranslating {
             return translation
         }
         for (source, translation) in additions {
-            if cache[source] == nil { insertionOrder.append(source) }
-            cache[source] = translation
+            let key = CacheKey(language: language, source: source)
+            if cache[key] == nil { insertionOrder.append(key) }
+            cache[key] = translation
             while insertionOrder.count > cacheCapacity {
                 cache.removeValue(forKey: insertionOrder.removeFirst())
             }

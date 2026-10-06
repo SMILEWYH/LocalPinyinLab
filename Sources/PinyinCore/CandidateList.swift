@@ -27,6 +27,18 @@ public struct CandidateList: Sendable, Equatable {
 
     public mutating func clear() { replace([]) }
 
+    /// A target-language change keeps candidate ordering and selection intact.
+    /// Engine diagnostics are independent of translation and remain visible.
+    public mutating func resetTranslations() {
+        for index in rows.indices {
+            switch rows[index].translation {
+            case .unavailable(.noCandidates), .unavailable(.engineUnavailable): continue
+            default:
+                rows[index].translation = rows[index].needsTranslation ? .pending : .notRequired
+            }
+        }
+    }
+
     public mutating func move(by offset: Int) {
         guard let selectedIndex else { return }
         self.selectedIndex = Self.moving(selectedIndex, by: offset, maximum: rows.count - 1)

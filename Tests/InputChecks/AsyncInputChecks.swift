@@ -179,7 +179,7 @@ import PinyinApplication
 @MainActor private final class DeferredTranslator: CandidateTranslating {
     var calls: [[String]] = []
     var pending: [Int: CheckedContinuation<[String], any Error>] = [:]
-    func translate(_ sources: [String]) async throws -> [String] {
+    func translate(_ sources: [String], to language: TranslationLanguage) async throws -> [String] {
         let index = calls.count
         calls.append(sources)
         return try await withCheckedThrowingContinuation { pending[index] = $0 }
@@ -191,7 +191,7 @@ import PinyinApplication
 }
 
 @MainActor private final class AsyncInputSpeaker: SpeechPlaying {
-    func speak(_ text: String) -> Bool { true }
+    func speak(_ text: String, language: TranslationLanguage) -> Bool { true }
     func stop() {}
 }
 

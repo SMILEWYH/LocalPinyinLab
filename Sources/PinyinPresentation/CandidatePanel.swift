@@ -22,12 +22,14 @@ public final class CandidatePanel: CandidatePresenting {
 
     deinit { statusTask?.cancel() }
 
-    public func show(rows: [CandidateRow], pinyin: String, selected: Int, page: Int, totalPages: Int, anchor: NSRect, status: String? = nil) {
+    public func show(rows: [CandidateRow], pinyin: String, selected: Int, page: Int, totalPages: Int, anchor: NSRect, status: String? = nil,
+                     translationLanguage: TranslationLanguage = .english) {
         cancelStatus()
-        let pageText = "第 \(page + 1)/\(max(1, totalPages)) 页"
+        let pageText = "\(translationLanguage.displayName)译文 · 第 \(page + 1)/\(max(1, totalPages)) 页"
         let footer = status.map { pageText + " · " + $0 } ?? pageText
         let bounds = visibleBounds(at: anchor)
-        let view = CandidateView(rows: rows, pinyin: pinyin, highlighted: selected, footer: footer, maximumSize: bounds.size)
+        let view = CandidateView(rows: rows, pinyin: pinyin, highlighted: selected, footer: footer, maximumSize: bounds.size,
+                                 translationLanguage: translationLanguage)
         let previousSelection = (panel.contentView?.accessibilitySelectedChildren()?.first as? NSView)?.accessibilityLabel()
         display(view, size: view.preferredSize, anchor: anchor)
         NSAccessibility.post(element: panel, notification: .layoutChanged)
@@ -79,7 +81,8 @@ public final class CandidatePanel: CandidatePresenting {
 
     public func show(_ presentation: CandidatePresentation) {
         show(rows: presentation.rows, pinyin: presentation.markedText, selected: presentation.highlighted,
-             page: presentation.page, totalPages: presentation.totalPages, anchor: resolvedAnchor(), status: presentation.status)
+             page: presentation.page, totalPages: presentation.totalPages, anchor: resolvedAnchor(), status: presentation.status,
+             translationLanguage: presentation.translationLanguage)
     }
 
     public func showCaseStatus(uppercaseLocked: Bool) {

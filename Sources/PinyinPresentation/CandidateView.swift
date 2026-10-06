@@ -15,7 +15,8 @@ public final class CandidateView: NSView {
     public var preferredSize: NSSize { size }
 
     public init(rows: [CandidateRow], pinyin: String, highlighted: Int, footer: String,
-                maximumSize: NSSize = NSSize(width: 560, height: 700), minimumHeight: CGFloat = 0) {
+                maximumSize: NSSize = NSSize(width: 560, height: 700), minimumHeight: CGFloat = 0,
+                translationLanguage: TranslationLanguage = .english) {
         precondition(rows.count <= PinyinRules.pageSize)
         // Width depends only on the available screen, never on delayed translations.
         let width = max(1, min(560, maximumSize.width))
@@ -34,7 +35,7 @@ public final class CandidateView: NSView {
         let rowHeights = rows.enumerated().map { index, row in
             let lines = index == highlighted ? 3 : 1
             return max(Self.height(row.text, font: Self.textFont, width: textWidth, lines: lines),
-                       Self.height(row.translationText, font: Self.annotationFont, width: glossWidth, lines: lines)) + 8
+                       Self.height(row.translationText(for: translationLanguage), font: Self.annotationFont, width: glossWidth, lines: lines)) + 8
         }
         let visible = Self.visibleRows(heights: rowHeights, highlighted: highlighted, availableHeight: availableBodyHeight)
         let minimumBodyHeight = rows.isEmpty ? max(0, minimumHeight - padding * 2 - headerHeight - footerHeight) : 0
@@ -63,7 +64,7 @@ public final class CandidateView: NSView {
             rowView.frame = NSRect(x: padding / 2, y: y, width: width - padding, height: height)
             rowView.setAccessibilityElement(true)
             rowView.setAccessibilityRole(.row)
-            rowView.setAccessibilityLabel(row.accessibilityText(index: index))
+            rowView.setAccessibilityLabel(row.accessibilityText(index: index, language: translationLanguage))
             rowView.setAccessibilitySelected(selected)
             rowView.setAccessibilityIndex(index)
             let lines = selected ? 3 : 1
@@ -71,7 +72,7 @@ public final class CandidateView: NSView {
                                     color: selected ? .white : NSColor(white: 0.45, alpha: 1), lines: 1)
             let chinese = Self.label(row.text, font: Self.textFont,
                                      color: selected ? .white : NSColor(white: 0.12, alpha: 1), lines: lines)
-            let gloss = Self.label(row.translationText, font: Self.annotationFont,
+            let gloss = Self.label(row.translationText(for: translationLanguage), font: Self.annotationFont,
                                    color: selected ? .white : NSColor(white: 0.38, alpha: 1), lines: lines)
             let textX = padding / 2 + indexWidth + gap
             let contentHeight = max(0, height - 8)
@@ -106,6 +107,7 @@ public final class CandidateView: NSView {
     private static func label(_ text: String, font: NSFont, color: NSColor, lines: Int) -> NSTextField {
         let field = lines == 1 ? NSTextField(labelWithString: text) : NSTextField(wrappingLabelWithString: text)
         field.font = font
+        field.baseWritingDirection = .natural
         field.textColor = color
         field.maximumNumberOfLines = lines
         field.lineBreakMode = lines == 1 ? .byTruncatingTail : .byWordWrapping

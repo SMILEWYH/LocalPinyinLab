@@ -1,7 +1,7 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
-let probes = ["InputSourceTool.swift", "InspectPrivate.m", "MenuIcon.swift"]
+let probes = ["InputSourceTool.swift", "InspectPrivate.m", "MenuIcon.swift", "SettingsIcon.swift"]
 func probe(_ name: String, file: String, dependencies: [Target.Dependency] = []) -> Target {
     .executableTarget(name: name, dependencies: dependencies, path: "Probes", exclude: probes.filter { $0 != file }, sources: [file])
 }
@@ -12,7 +12,8 @@ let package = Package(
     products: [
         .library(name: "PinyinCore", targets: ["PinyinCore"]),
         .library(name: "PinyinApplication", targets: ["PinyinApplication"]),
-        .executable(name: "LocalPinyin", targets: ["LocalPinyin"])
+        .executable(name: "LocalPinyin", targets: ["LocalPinyin"]),
+        .executable(name: "PinyinSettings", targets: ["PinyinSettings"])
     ],
     targets: [
         .target(name: "PinyinCore"),
@@ -25,6 +26,8 @@ let package = Package(
         .executableTarget(name: "presentation-checks", dependencies: ["PinyinCore", "PinyinApplication", "PinyinPresentation"], path: "Tests/PresentationChecks"),
         probe("inputsource-tool", file: "InputSourceTool.swift"),
         probe("menu-icon", file: "MenuIcon.swift"),
-        .executableTarget(name: "TranslationSetup", path: "Tools/TranslationSetup")
+        probe("settings-icon", file: "SettingsIcon.swift"),
+        .executableTarget(name: "PinyinSettings", dependencies: ["PinyinCore", "PinyinInfrastructure"], path: "Tools/PinyinSettings"),
+        .testTarget(name: "PinyinSettingsTests", dependencies: ["PinyinSettings", "PinyinCore"])
     ]
 )

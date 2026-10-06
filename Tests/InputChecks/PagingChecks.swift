@@ -182,11 +182,11 @@ import PinyinApplication
 }
 
 @MainActor private final class PagingTranslator: CandidateTranslating {
-    func translate(_ sources: [String]) async throws -> [String] { sources }
+    func translate(_ sources: [String], to language: TranslationLanguage) async throws -> [String] { sources }
 }
 
 @MainActor private final class PagingSpeaker: SpeechPlaying {
-    func speak(_ text: String) -> Bool { true }
+    func speak(_ text: String, language: TranslationLanguage) -> Bool { true }
     func stop() {}
 }
 
