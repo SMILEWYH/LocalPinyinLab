@@ -28,6 +28,7 @@ func checkEqual<T: Equatable>(_ actual: T, _ expected: T,
         let asynchronous = AsyncInputChecks()
         let languages = TranslationLanguageChecks()
         let speech = SpeechShortcutChecks()
+        let learning = CandidateLearningChecks()
         let cases: [(String, @MainActor () async throws -> Void)] = [
             ("Chinese punctuation follows the current mode", checks.chinesePunctuation),
             ("English punctuation passes through unchanged", checks.englishPunctuation),
@@ -89,7 +90,16 @@ func checkEqual<T: Equatable>(_ actual: T, _ expected: T,
             ("Translations arriving during a held chord cannot arm speech", speech.aTranslationArrivingDuringTheChordDoesNotArmIt),
             ("Custom speech key chords require ready speech and suppress repeats", speech.customKeyChordsRequireReadySpeechAndDoNotRepeat),
             ("Speech cancellation and shortcut changes require fresh chords", speech.explicitCancellationAndConfigurationChangesNeedFreshChords),
-            ("Candidate, language and lifecycle changes cancel pending speech", speech.candidateLanguageAndLifecycleChangesCancelGestures)
+            ("Candidate, language and lifecycle changes cancel pending speech", speech.candidateLanguageAndLifecycleChangesCancelGestures),
+            ("Number and Space learn a submitted candidate exactly once", learning.fullCandidateSelectionLearnsOnce),
+            ("Segmented selection learns only final segments and exact pinyin", learning.segmentedSelectionLearnsOnlyTheFinalSegments),
+            ("Cancellation, undo and deletion discard unsubmitted selections", learning.cancellationAndUndoDiscardOldSelections),
+            ("Space learns selected Chinese after deleting its raw suffix", learning.selectedTextWithoutSuffixStillLearns),
+            ("Enter, punctuation, mode and lifecycle commits learn only chosen text", learning.compositionCompletionLearnsOnlyChosenText),
+            ("Raw pinyin and standalone punctuation never teach candidates", learning.rawCompositionAndPunctuationNeverLearn),
+            ("Reentrant host commits see cleared composition and learn once", learning.reentrantCommitCannotRepeatLearning),
+            ("Queued selections learn only from the current candidate query", learning.queuedSelectionLearnsOnlyTheCurrentQuery),
+            ("Late candidates cannot teach after cancellation or commit", learning.lateCandidatesCannotLearnAfterCancellationOrCommit)
         ]
         var failures = 0
         for (name, run) in cases {

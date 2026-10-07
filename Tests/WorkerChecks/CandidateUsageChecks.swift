@@ -1,0 +1,250 @@
+import Foundation
+import PinyinCore
+import PinyinInfrastructure
+
+private struct UsageCheckFailure: Error, CustomStringConvertible {
+    let description: String
+}
+
+private func requireUsage(_ condition: Bool, _ message: String) throws {
+    if !condition { throw UsageCheckFailure(description: message) }
+}
+
+private struct UsageFixture {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("localpinyin-usage-check-" + UUID().uuidString)
+    var file: URL { root.appendingPathComponent("learning/candidate-usage.json") }
+
+    func prepareDirectory() throws {
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+    }
+
+    func remove() { try? FileManager.default.removeItem(at: root) }
+}
+
+enum CandidateUsageChecks {
+    static var cases: [(String, @Sendable () throws -> Void)] {
+        [
+            ("Learned candidates use frequency, recency and stable engine order", ranking),
+            ("Learning loads lazily and persists privately across restarts", persistence),
+            ("Learning preserves the engine's consumption-length positions", consumptionLengths),
+            ("Learning preserves internal apostrophe distinctions", spellings),
+            ("Learning ignores raw pinyin and malformed candidate text", invalidSelections),
+            ("Broken learning files fall back and retain their original bytes", brokenFiles),
+            ("Temporary read failures preserve and merge existing learning", retryReadFailure),
+            ("Learning remains usable when a save fails", failedSave),
+            ("Learning bounds loaded records and handles sequence overflow", storageBounds)
+        ]
+    }
+
+    private static func segments(_ text: String, _ pinyin: String) throws -> [CompositionState.Segment] {
+        var state = CompositionState()
+        try requireUsage(state.append(pinyin), "Invalid fixture pinyin: \(pinyin)")
+        try requireUsage(state.choose(Candidate(text: text, consumedCount: pinyin.count)), "Invalid fixture candidate")
+        return state.segments
+    }
+
+    private static func record(_ text: String, _ pinyin: String, in store: CandidateUsageStore) throws {
+        try store.record(segments(text, pinyin))
+    }
+
+    private static func candidates(_ texts: [String], length: Int) -> [Candidate] {
+        texts.map { Candidate(text: $0, consumedCount: length) }
+    }
+
+    private static func ranking() throws {
+        let fixture = UsageFixture()
+        defer { fixture.remove() }
+        let store = CandidateUsageStore(fileURL: fixture.file)
+        let original = candidates(["你", "尼", "泥", "妮"], length: 2)
+        try requireUsage(store.ranked(original, for: "ni") == original, "Unlearned order changed")
+        try record("尼", "ni", in: store)
+        try record("泥", "ni", in: store)
+        try requireUsage(store.ranked(original, for: "ni").map(\.text) == ["泥", "尼", "你", "妮"], "Recent equal-frequency choice did not lead")
+        try record("尼", "ni", in: store)
+        try record("妮", "ni", in: store)
+        try requireUsage(store.ranked(original, for: "ni").map(\.text) == ["尼", "妮", "泥", "你"], "Frequency did not take precedence over recency")
+        let absent = candidates(["你", "妮"], length: 2)
+        try requireUsage(store.ranked(absent, for: "ni").map(\.text) == ["妮", "你"], "Learning injected a candidate absent from the engine response")
+    }
+
+    private static func persistence() throws {
+        let fixture = UsageFixture()
+        defer { fixture.remove() }
+        let store = CandidateUsageStore(fileURL: fixture.file)
+        try requireUsage(!FileManager.default.fileExists(atPath: fixture.root.path), "Initialization performed filesystem writes")
+        try record("泥", "ni", in: store)
+        let restarted = CandidateUsageStore(fileURL: fixture.file)
+        let original = candidates(["你", "泥"], length: 2)
+        try requireUsage(restarted.ranked(original, for: "ni").first?.text == "泥", "Learning was lost on restart")
+        let fileMode = try FileManager.default.attributesOfItem(atPath: fixture.file.path)[.posixPermissions] as? NSNumber
+        let directoryMode = try FileManager.default.attributesOfItem(atPath: fixture.file.deletingLastPathComponent().path)[.posixPermissions] as? NSNumber
+        try requireUsage(fileMode?.intValue == 0o600 && directoryMode?.intValue == 0o700, "Learning data permissions are not private")
+        let document = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture.file)) as? [String: Any]
+        let entries = document?["entries"] as? [[String: Any]]
+        try requireUsage(Set(document?.keys.map { $0 } ?? []) == ["version", "entries"], "Unexpected document fields")
+        try requireUsage(Set(entries?.first?.keys.map { $0 } ?? []) == ["pinyin", "text", "count", "recency"], "Learning retained data beyond the selected spelling/text counters")
+
+        // The initializer must also defer reads until the queue first uses the store.
+        let deferredFile = fixture.root.appendingPathComponent("deferred/candidate-usage.json")
+        let deferred = CandidateUsageStore(fileURL: deferredFile)
+        try FileManager.default.createDirectory(at: deferredFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: fixture.file, to: deferredFile)
+        try requireUsage(deferred.ranked(original, for: "ni").first?.text == "泥", "Initialization eagerly read the absent file")
+    }
+
+    private static func consumptionLengths() throws {
+        let fixture = UsageFixture()
+        defer { fixture.remove() }
+        let store = CandidateUsageStore(fileURL: fixture.file)
+        try record("你", "ni", in: store)
+        let original = [
+            Candidate(text: "你好", consumedCount: 5),
+            Candidate(text: "尼", consumedCount: 2),
+            Candidate(text: "拟好", consumedCount: 5),
+            Candidate(text: "你", consumedCount: 2),
+            Candidate(text: "泥", consumedCount: 2)
+        ]
+        let ranked = store.ranked(original, for: "nihao")
+        try requireUsage(ranked.map(\.text) == ["你好", "你", "拟好", "尼", "泥"], "A shorter choice displaced a longer phrase or changed unmatched order")
+        try requireUsage(zip(ranked, original).allSatisfy { $0.consumedCount == $1.consumedCount }, "Consumption slots changed")
+        let invalidLengths = [Candidate(text: "你", consumedCount: 0), Candidate(text: "尼", consumedCount: 20)]
+        try requireUsage(store.ranked(invalidLengths, for: "ni") == invalidLengths, "Malformed consumption lengths changed")
+    }
+
+    private static func spellings() throws {
+        let fixture = UsageFixture()
+        defer { fixture.remove() }
+        let store = CandidateUsageStore(fileURL: fixture.file)
+        try record("西安", "'xi'an'", in: store)
+        let separate = candidates(["先", "西安"], length: 5)
+        try requireUsage(store.ranked(separate, for: "xi'an").first?.text == "西安", "Boundary apostrophes were not normalized")
+        let joined = candidates(["先", "西安"], length: 4)
+        try requireUsage(store.ranked(joined, for: "xian") == joined, "Internal apostrophes were discarded")
+        let trailing = candidates(["先", "西安"], length: 6)
+        try requireUsage(store.ranked(trailing, for: "xi'an'").first?.text == "西安", "Trailing consumed separator prevented learning lookup")
+        try record("你", "ni", in: store)
+        try requireUsage(store.ranked(candidates(["尼", "你"], length: 2), for: "na").first?.text == "尼", "Learning leaked across spellings")
+    }
+
+    private static func invalidSelections() throws {
+        let fixture = UsageFixture()
+        defer { fixture.remove() }
+        let store = CandidateUsageStore(fileURL: fixture.file)
+        for (text, spelling) in [("ni", "ni"), ("ASCII", "ni"), ("...", "ni"), ("你\n", "ni"),
+                                 (String(repeating: "你", count: 200), "ni"), ("你", "'''")] {
+            try record(text, spelling, in: store)
+        }
+        try store.record([])
+        try requireUsage(!FileManager.default.fileExists(atPath: fixture.file.path), "Invalid selections were saved")
+        try record("你", "ni", in: store)
+        let original = candidates(["尼", "你"], length: 2)
+        try requireUsage(store.ranked(original, for: "NI") == original, "Invalid query was normalized into another key")
+        try requireUsage(store.ranked(original, for: "ni").first?.text == "你", "Rejected entries disabled later valid learning")
+    }
+
+    private static func brokenFiles() throws {
+        let payloads = [
+            Data("{broken json".utf8),
+            try JSONSerialization.data(withJSONObject: ["version": 99, "entries": []]),
+            try JSONSerialization.data(withJSONObject: ["version": 1, "entries": [
+                ["pinyin": "ni", "text": "你😀", "count": 99, "recency": 1]
+            ]]),
+            try JSONSerialization.data(withJSONObject: ["version": 1, "entries": [
+                ["pinyin": "ni", "text": "你", "count": 0, "recency": 1]
+            ]])
+        ]
+        for payload in payloads {
+            let fixture = UsageFixture()
+            defer { fixture.remove() }
+            try fixture.prepareDirectory()
+            try payload.write(to: fixture.file)
+            let store = CandidateUsageStore(fileURL: fixture.file)
+            let original = candidates(["尼", "你"], length: 2)
+            try requireUsage(store.ranked(original, for: "ni") == original, "Corrupt file changed engine fallback order")
+            try requireUsage(try Data(contentsOf: fixture.file) == payload, "Reading corrupt data changed its original bytes")
+            try record("你", "ni", in: store)
+            let files = try FileManager.default.contentsOfDirectory(at: fixture.file.deletingLastPathComponent(), includingPropertiesForKeys: nil)
+            let backup = files.filter { $0.lastPathComponent.contains(".corrupt-") }
+            try requireUsage(backup.count == 1, "Corrupt learning file was not retained before recovery")
+            try requireUsage(try Data(contentsOf: backup[0]) == payload, "Corrupt backup bytes were changed")
+            let restarted = CandidateUsageStore(fileURL: fixture.file)
+            try requireUsage(restarted.ranked(original, for: "ni").first?.text == "你", "Learning did not recover after corruption")
+        }
+    }
+
+    private static func failedSave() throws {
+        let fixture = UsageFixture()
+        defer { fixture.remove() }
+        try FileManager.default.createDirectory(at: fixture.root, withIntermediateDirectories: true)
+        // A regular file in place of the parent directory fails even for privileged tests.
+        let blocker = fixture.file.deletingLastPathComponent()
+        try Data("block writes".utf8).write(to: blocker)
+        let store = CandidateUsageStore(fileURL: fixture.file)
+        var saveFailed = false
+        do { try record("泥", "ni", in: store) } catch { saveFailed = true }
+        try requireUsage(saveFailed, "An impossible save unexpectedly succeeded")
+        let original = candidates(["你", "泥"], length: 2)
+        try requireUsage(store.ranked(original, for: "ni").first?.text == "泥", "Failed persistence discarded in-memory learning")
+        try FileManager.default.removeItem(at: blocker)
+        try record("泥", "ni", in: store)
+        try requireUsage(CandidateUsageStore(fileURL: fixture.file).ranked(original, for: "ni").first?.text == "泥", "A later save did not recover")
+    }
+
+    private static func retryReadFailure() throws {
+        let fixture = UsageFixture()
+        defer { fixture.remove() }
+        let initial = CandidateUsageStore(fileURL: fixture.file)
+        for text in ["你", "你", "你", "泥", "妮"] { try record(text, "ni", in: initial) }
+        let oldData = try Data(contentsOf: fixture.file)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: fixture.file.path)
+        let recovering = CandidateUsageStore(fileURL: fixture.file)
+        let original = candidates(["你", "泥", "妮", "尼"], length: 2)
+        try requireUsage(recovering.ranked(original, for: "ni") == original, "An unreadable store changed fallback order")
+        for text in ["你", "泥", "尼"] {
+            var failed = false
+            do { try record(text, "ni", in: recovering) } catch { failed = true }
+            try requireUsage(failed, "Reading a mode-000 file must fail and prevent a destructive save")
+        }
+        try requireUsage(recovering.ranked(original, for: "ni").map(\.text) == ["尼", "泥", "你", "妮"], "Temporary read errors discarded in-memory learning")
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fixture.file.path)
+        try requireUsage(try Data(contentsOf: fixture.file) == oldData, "A failed read replaced the original history")
+        // Retry through the read path first, then commit one more selection. The
+        // in-memory deltas must merge only once and retain their relative recency.
+        try requireUsage(recovering.ranked(original, for: "ni").map(\.text) == ["你", "泥", "尼", "妮"], "Restored history did not merge with recent in-memory selections")
+        try record("妮", "ni", in: recovering)
+        let document = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture.file)) as? [String: Any]
+        let saved = document?["entries"] as? [[String: Any]] ?? []
+        let counts = Dictionary(uniqueKeysWithValues: saved.compactMap { entry -> (String, Int)? in
+            guard let text = entry["text"] as? String, let count = entry["count"] as? Int else { return nil }
+            return (text, count)
+        })
+        try requireUsage(counts == ["你": 4, "泥": 2, "妮": 2, "尼": 1], "Recovery lost old counts or double-counted pending learning")
+        let restarted = CandidateUsageStore(fileURL: fixture.file)
+        try requireUsage(restarted.ranked(original, for: "ni").map(\.text) == ["你", "妮", "泥", "尼"], "Merged counts or recency were not persisted")
+        let files = try FileManager.default.contentsOfDirectory(at: fixture.file.deletingLastPathComponent(), includingPropertiesForKeys: nil)
+        try requireUsage(!files.contains { $0.lastPathComponent.contains(".corrupt-") }, "An I/O failure incorrectly classified valid history as corrupt")
+    }
+
+    private static func storageBounds() throws {
+        let fixture = UsageFixture()
+        defer { fixture.remove() }
+        try fixture.prepareDirectory()
+        let initial: [[String: Any]] = (1...10_000).map { index in
+            ["pinyin": "ni", "text": "你\(index)", "count": 1, "recency": index]
+        }
+        try JSONSerialization.data(withJSONObject: ["version": 1, "entries": initial]).write(to: fixture.file)
+        let store = CandidateUsageStore(fileURL: fixture.file)
+        try record("泥", "ni", in: store)
+        let document = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture.file)) as? [String: Any]
+        let saved = document?["entries"] as? [[String: Any]] ?? []
+        try requireUsage(saved.count == 10_000, "Record count exceeded its storage bound")
+        try requireUsage(!saved.contains { $0["text"] as? String == "你1" }, "Least-recent entry was not evicted")
+        try requireUsage(saved.contains { $0["text"] as? String == "泥" }, "New entry was evicted instead of old data")
+
+        // A loaded sequence can reach the numeric limit; recording must not trap.
+        try Data("{\"version\":1,\"entries\":[{\"pinyin\":\"ni\",\"text\":\"你\",\"count\":1000000,\"recency\":18446744073709551615}]}".utf8).write(to: fixture.file)
+        let overflow = CandidateUsageStore(fileURL: fixture.file)
+        try record("你", "ni", in: overflow)
+        try requireUsage(overflow.ranked(candidates(["尼", "你"], length: 2), for: "ni").first?.text == "你", "Counter overflow broke learned ranking")
+    }
+}

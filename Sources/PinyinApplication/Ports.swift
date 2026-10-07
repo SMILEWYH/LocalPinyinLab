@@ -5,6 +5,13 @@ import PinyinCore
 @MainActor public protocol CandidateProviding: AnyObject {
     func warm()
     func candidates(for pinyin: String, context: String) async throws -> [Candidate]
+    /// Only final, submitted segments contribute to personal candidate ranking.
+    /// Implementations must enqueue persistence without blocking the input thread.
+    func recordCommittedSegments(_ segments: [CompositionState.Segment])
+}
+
+extension CandidateProviding {
+    public func recordCommittedSegments(_ segments: [CompositionState.Segment]) {}
 }
 
 @MainActor public protocol CandidateTranslating: AnyObject {

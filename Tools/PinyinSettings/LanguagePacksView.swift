@@ -3,6 +3,7 @@ import PinyinCore
 
 struct LanguagePacksView: View {
     @ObservedObject var model: LanguagePacksModel
+    @StateObject private var removal = LanguagePackRemovalPresentation()
 
     var body: some View {
         SettingsPageContent(title: "语言包", subtitle: "选择候选译文和朗读使用的目标语言。", identifier: "settings-page-language-packs") {
@@ -10,7 +11,7 @@ struct LanguagePacksView: View {
                 Button(model.isCheckingAll ? "正在检查全部…" : "检查全部语言包") {
                     Task { await model.checkAllAvailability() }
                 }
-                .disabled(model.isCheckingAll || model.isPreparing)
+                .disabled(model.isCheckingAll)
                 .accessibilityIdentifier("language-packs-refresh")
             }) {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 7) {
@@ -23,7 +24,22 @@ struct LanguagePacksView: View {
                         .accessibilityIdentifier("translation-language-selection-error")
                 }
             }
-            SettingsCard(title: "中文 → \(model.targetLanguage.displayName)", symbol: "character.bubble") {
+            SettingsCard(title: "中文 → \(model.targetLanguage.displayName)", symbol: "character.bubble", headerAction: {
+                if model.isReady {
+                    Button("删除语言包…", role: .destructive) {
+                        removal.language = model.targetLanguage
+                        removal.isPresented = true
+                    }
+                    .buttonStyle(.bordered).disabled(!model.canRequestRemoval)
+                    .help("在系统设置中仅移除\(model.targetLanguage.displayName)，保留中文语言包。")
+                    .accessibilityIdentifier("language-packs-remove")
+                } else {
+                    Button("准备语言包") { model.prepare() }
+                        .buttonStyle(.borderedProminent).disabled(!model.canPrepare)
+                        .help("打开系统「翻译语言」列表，自行选择所需语言下载。")
+                        .accessibilityIdentifier("language-packs-prepare")
+                }
+            }) {
                 HStack(alignment: .top, spacing: 12) {
                     if model.isBusy {
                         ProgressView().controlSize(.small).frame(width: 24, height: 24)
@@ -38,21 +54,26 @@ struct LanguagePacksView: View {
                             .accessibilityIdentifier("language-packs-detail")
                     }
                 }
-                if !model.isReady {
-                    Divider().padding(.vertical, 4)
-                    HStack {
-                        Spacer()
-                        Button(model.phase == .failed ? "重试准备" : "准备语言包") { model.prepare() }
-                            .buttonStyle(.borderedProminent).disabled(!model.canPrepare)
-                            .accessibilityIdentifier("language-packs-prepare")
-                    }
+                if let error = model.preparationSettingsError {
+                    Text(error).font(.callout).foregroundStyle(.orange)
+                        .accessibilityIdentifier("language-packs-preparation-error")
+                }
+                if let error = model.removalSettingsError {
+                    Text(error).font(.callout).foregroundStyle(.orange)
+                        .accessibilityIdentifier("language-packs-removal-error")
                 }
             }
             SettingsCard(title: "关于语言包", symbol: "info.circle") {
                 Text("语言包由 macOS 管理。首次准备可能需要联网下载；下载完成后，候选翻译在本机运行。")
-                Text("翻译语言包与朗读声音分别由系统管理。此页面只在你点击「准备语言包」后开始准备；没有语言包，也能正常输入中文。")
-                    .foregroundStyle(.secondary)
             }
+        }
+        .alert("删除\(removal.language?.displayName ?? "")语言包", isPresented: $removal.isPresented,
+               presenting: removal.language) { language in
+            Button("打开翻译语言") { model.openRemovalSettings(for: language) }
+                .accessibilityIdentifier("language-packs-open-system-removal")
+            Button("取消", role: .cancel) {}
+        } message: { language in
+            Text("将在系统设置中打开「翻译语言」。请仅点按「\(language.displayName)」旁的「移除」，保留中文语言包。\n\n该语言包由系统共享，移除后其他 App 也无法使用它进行离线翻译。返回此页面后会自动更新安装状态。")
         }
     }
 
@@ -88,7 +109,6 @@ struct LanguagePacksView: View {
             .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(LanguageCardButtonStyle(selected: selected))
-        .disabled(model.isPreparing)
         .help(language.nativeName + " · " + installationStatus + (selected ? " · 当前使用" : ""))
         .accessibilityLabel(language.displayName + "，" + language.nativeName)
         .accessibilityValue(installationStatus + (selected ? "，当前使用" : ""))
@@ -105,6 +125,12 @@ struct LanguagePacksView: View {
         case .unknown: "questionmark.circle"
         }
     }
+}
+
+@MainActor
+private final class LanguagePackRemovalPresentation: ObservableObject {
+    @Published var language: TranslationLanguage?
+    @Published var isPresented = false
 }
 
 private struct LanguageCardButtonStyle: ButtonStyle {

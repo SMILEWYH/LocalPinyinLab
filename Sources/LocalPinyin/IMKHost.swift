@@ -25,6 +25,8 @@ import PinyinApplication
 
     func commit(_ text: String) { client.insertText(text, replacementRange: replacement) }
 
+    var windowLevel: Int { Int(client.windowLevel()) }
+
     var anchor: NSRect {
         var rectangle = NSRect.zero
         _ = client.attributes(forCharacterIndex: 0, lineHeightRectangle: &rectangle)

@@ -271,9 +271,13 @@ import PinyinCore
         hostRevision &+= 1
         let previousHost = host
         let text = composition.isEmpty ? nil : composition.markedText
+        let segments = composition.segments
         clear()
         host = nil
-        if let text { previousHost?.commit(text) }
+        if let text, let previousHost {
+            if !segments.isEmpty { provider.recordCommittedSegments(segments) }
+            previousHost.commit(text)
+        }
     }
 
     /// Secure-input transitions discard composition and clear the host's marked text.
@@ -419,9 +423,14 @@ import PinyinCore
         guard !composition.isEmpty || !suffix.isEmpty else { return }
         let text = composition.markedText + suffix
         let previousHost = host
+        let segments = composition.segments
         // Invalidate before calling the host, which may synchronously trigger lifecycle callbacks.
         clear()
-        previousHost?.commit(text)
+        if let previousHost {
+            // Queue learning before a reentrant host can start the next query.
+            if !segments.isEmpty { provider.recordCommittedSegments(segments) }
+            previousHost.commit(text)
+        }
     }
 
     private func invalidateRequests() {

@@ -23,7 +23,8 @@ import PinyinPresentation
         provider: PinyinSession.shared,
         translator: AppleTranslator(),
         speaker: LocalSpeechPlayer(),
-        presenter: CandidatePanel(anchor: { [weak self] in self?.host?.anchor ?? .zero }),
+        presenter: CandidatePanel(anchor: { [weak self] in self?.host?.anchor ?? .zero },
+                                  windowLevel: { [weak self] in self?.host?.windowLevel ?? 0 }),
         modeState: InputController.modeState,
         translationLanguage: TranslationPreferences.targetLanguage,
         speechShortcut: SpeechShortcutPreferences.shortcut)

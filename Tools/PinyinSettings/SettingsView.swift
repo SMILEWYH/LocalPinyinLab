@@ -1,5 +1,4 @@
 import SwiftUI
-import Translation
 import PinyinInfrastructure
 
 enum SettingsPage: String, CaseIterable, Identifiable {
@@ -38,7 +37,7 @@ struct SettingsRootView: View {
     }
 
     var body: some View {
-        // Keep the task and model above page navigation: changing pages must not cancel preparation.
+        // Keep the shared model above navigation so both pages use current preferences.
         let languagePacks = self.languagePacks
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
@@ -79,12 +78,6 @@ struct SettingsRootView: View {
         .task {
             await languagePacks.checkAllAvailability()
         }
-        .background {
-            if let preparation = languagePacks.preparation {
-                LanguagePackPreparationTask(model: languagePacks, preparation: preparation)
-                    .id(preparation.id)
-            }
-        }
         .onReceive(DistributedNotificationCenter.default().publisher(
             for: TranslationPreferences.didChangeNotification, object: TranslationPreferences.notificationObject as NSString)) { _ in
                 languagePacks.refreshFromPreferences()
@@ -98,35 +91,6 @@ struct SettingsRootView: View {
             for: SpeechShortcutPreferences.didChangeNotification, object: SpeechShortcutPreferences.notificationObject as NSString)) { _ in
                 speechShortcut.refreshFromPreferences()
         }
-    }
-}
-
-/// Each attempt owns a fresh system session, including retries of the same language.
-/// Keep this above page navigation so changing settings pages preserves the prompt.
-private struct LanguagePackPreparationTask: View {
-    let model: LanguagePacksModel
-    let preparation: LanguagePacksModel.Preparation
-
-    var body: some View {
-        Color.clear
-            .translationTask(source: Locale.Language(identifier: "zh-Hans"),
-                             target: Locale.Language(identifier: preparation.language.localeIdentifier)) { @Sendable session in
-                await withTaskCancellationHandler {
-                    do {
-                        try await session.prepareTranslation()
-                        try Task.checkCancellation()
-                        await model.finishedPreparation(preparation)
-                    } catch is CancellationError {
-                        await model.finishedPreparation(preparation)
-                    } catch {
-                        await model.failedPreparation(preparation)
-                    }
-                } onCancel: {
-                    // Release the UI even if the system call does not return on cancellation.
-                    Task { @MainActor in model.finishedPreparation(preparation) }
-                }
-            }
-            .onDisappear { model.finishedPreparation(preparation) }
     }
 }
 

@@ -5,19 +5,21 @@ import PinyinApplication
 @MainActor
 public final class CandidatePanel: CandidatePresenting {
     private let anchor: () -> NSRect
+    private let windowLevel: () -> Int
     private var statusTask: Task<Void, Never>?
     private var statusID: UUID?
-    let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    package let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
 
-    public init(anchor: @escaping () -> NSRect = { .zero }) {
+    public init(anchor: @escaping () -> NSRect = { .zero }, windowLevel: @escaping () -> Int = { 0 }) {
         self.anchor = anchor
+        self.windowLevel = windowLevel
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        panel.level = NSWindow.Level(rawValue: 101)
+        panel.collectionBehavior = [.canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary, .stationary]
+        updateWindowLevel()
     }
 
     deinit { statusTask?.cancel() }
@@ -44,6 +46,7 @@ public final class CandidatePanel: CandidatePresenting {
     }
 
     private func display(_ view: NSView, size: NSSize, anchor: NSRect, isStatus: Bool = false) {
+        updateWindowLevel()
         let bounds = visibleBounds(at: anchor)
         let size = NSSize(width: min(size.width, bounds.width), height: min(size.height, bounds.height))
         let below = anchor.minY - 4 - size.height
@@ -54,6 +57,13 @@ public final class CandidatePanel: CandidatePresenting {
         panel.contentView = view
         panel.setFrame(NSRect(origin: origin, size: size), display: true)
         panel.orderFrontRegardless()
+    }
+
+    package func updateWindowLevel() {
+        // IMK clients can live in floating or full-screen windows. Follow their
+        // current level on every presentation without activating the input service.
+        let clientLevel = min(windowLevel(), Int(Int32.max) - 1)
+        panel.level = NSWindow.Level(rawValue: max(Int(CGWindowLevelForKey(.popUpMenuWindow)), clientLevel + 1))
     }
 
     private func statusOrigin(size: NSSize, anchor: NSRect, bounds: NSRect) -> NSPoint {

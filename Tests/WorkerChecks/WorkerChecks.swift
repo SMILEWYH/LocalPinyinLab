@@ -79,8 +79,9 @@ private struct WorkerFixture {
             ("Cancelled startup stops the handshake without retrying", cancelledHandshake),
             ("Worker exit retries once and restores a persistent connection", retryAfterExit),
             ("Response timeout still retries and recovers", retryAfterTimeout),
-            ("Persistent failure stops after two attempts", retryLimit)
-        ]
+            ("Persistent failure stops after two attempts", retryLimit),
+            ("Committed selections reorder the next query and survive a new session", learnedOrderSurvivesRestart)
+        ] + CandidateUsageChecks.cases.map { name, run in (name, { try run() }) }
         var failures = 0
         for (name, run) in cases {
             do { try await run(); print("PASS: \(name)") }
@@ -88,6 +89,37 @@ private struct WorkerFixture {
         }
         print("\(cases.count - failures)/\(cases.count) worker checks passed")
         if failures > 0 { exit(1) }
+    }
+
+    @MainActor private static func learnedOrderSurvivesRestart() async throws {
+        let fixture = try WorkerFixture(behavior: "ranking")
+        defer { fixture.remove() }
+        let file = fixture.root.appendingPathComponent("history/usage.json")
+        let session = PinyinSession(workerRoot: fixture.root, usageFileURL: file)
+        do {
+            let original = try await session.candidates(for: "ni")
+            try require(original.map(\.text) == ["你", "尼"], "Unexpected initial ordering")
+            var composition = CompositionState()
+            _ = composition.append("ni")
+            _ = composition.choose(original[1])
+            session.recordCommittedSegments(composition.segments)
+            let learned = try await session.candidates(for: "ni")
+            try require(learned.map(\.text) == ["尼", "你"], "Next query overtook learning")
+            await session.shutdown()
+            let restarted = PinyinSession(workerRoot: fixture.root, usageFileURL: file)
+            do {
+                let restored = try await restarted.candidates(for: "ni")
+                try require(restored == learned, "Restart lost the learned candidate order")
+                await restarted.shutdown()
+            } catch {
+                await restarted.shutdown()
+                throw error
+            }
+            try fixture.verifyStopped()
+        } catch {
+            await session.shutdown()
+            throw error
+        }
     }
 
     @MainActor private static func cancelledQuery() async throws {
@@ -237,6 +269,10 @@ private struct WorkerFixture {
                     stall()
                 }
                 if behavior == "timeout-first" && previousStarts == 0 { stall() }
+                if behavior == "ranking" {
+                    try emit("[{\"text\":\"你\",\"reading\":\"ni\"},{\"text\":\"尼\",\"reading\":\"ni\"}]\n")
+                    continue
+                }
                 let text = query == "ni" ? "你" : "好"
                 try emit("[{\"text\":\"\(text)\",\"reading\":\"\(query)\"}]\n")
             }
