@@ -16,8 +16,8 @@ import PinyinCore
         _ = applyCapsLock(enabled)
     }
 
-    /// The adapter records a lock value that it writes for a shortcut or an
-    /// uppercase transition. Its echoed event must not replay that transition.
+    /// The adapter records a lock value that it writes for an uppercase
+    /// transition. Its echoed event must not replay that transition.
     public func acknowledgeCapsLock(_ enabled: Bool) { capsLock = enabled }
 
     @discardableResult public func observeCapsLock(_ enabled: Bool, modifiers: KeyModifiers = [],
@@ -44,11 +44,5 @@ import PinyinCore
         isUppercaseLocked = nextUppercase
         revision &+= 1
         return true
-    }
-
-    public func toggle() {
-        mode = mode == .chinesePinyin ? .englishDirect : .chinesePinyin
-        if mode == .chinesePinyin { isUppercaseLocked = false }
-        revision &+= 1
     }
 }

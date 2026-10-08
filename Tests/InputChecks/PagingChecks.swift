@@ -92,13 +92,13 @@ import PinyinApplication
             try checkFalse(fixture.press(key))
             try checkFalse(fixture.press(key, modifiers: .shift))
         }
-        try checkTrue(fixture.press(49, text: " ", modifiers: [.control, .shift]))
+        try checkTrue(fixture.pressCapsLock())
         try checkEqual(fixture.session.mode, .englishDirect)
         for key: UInt16 in [123, 124] {
             try checkFalse(fixture.press(key))
             try checkFalse(fixture.press(key, modifiers: .shift))
         }
-        try checkTrue(fixture.press(49, text: " ", modifiers: [.control, .shift]))
+        try checkTrue(fixture.pressCapsLock())
         try await fixture.compose("ni")
         for modifiers: KeyModifiers in [.command, .control, .option, [.command, .shift], [.control, .shift], [.option, .shift]] {
             for key: UInt16 in [123, 124] { try checkFalse(fixture.press(key, modifiers: modifiers)) }
@@ -106,6 +106,47 @@ import PinyinApplication
         try fixture.checkPage(0)
         try checkEqual(fixture.host.markedText, "ni")
         try checkTrue(fixture.host.committed.isEmpty)
+    }
+
+    func controlShiftSpacePreservesComposition() async throws {
+        for isLoading in [false, true] {
+            let fixture = PagingFixture()
+            defer { fixture.session.cancel() }
+            fixture.provider.delaysResponse = isLoading
+            try checkTrue(fixture.press(45, text: "ni"))
+            if isLoading {
+                for _ in 0..<100 where fixture.provider.pendingResponse == nil { await Task.yield() }
+                try checkTrue(fixture.provider.pendingResponse != nil)
+            } else {
+                try await fixture.waitForCandidates()
+                try checkTrue(fixture.press(124))
+                try checkTrue(fixture.press(125))
+            }
+            let state = fixture.session.queryState
+            let page = fixture.session.candidates.page
+            let highlight = fixture.session.candidates.highlighted
+            let visibleCandidates = fixture.presenter.presentation?.rows.map(\.text)
+
+            try checkFalse(fixture.press(49, text: " ", modifiers: [.control, .shift]))
+            try checkEqual(fixture.session.mode, .chinesePinyin)
+            try checkEqual(fixture.session.composition.pending, "ni")
+            try checkEqual(fixture.host.markedText, "ni")
+            try checkEqual(fixture.session.queryState, state)
+            try checkEqual(fixture.session.candidates.page, page)
+            try checkEqual(fixture.session.candidates.highlighted, highlight)
+            try checkEqual(fixture.presenter.presentation?.rows.map(\.text), visibleCandidates)
+            try checkTrue(fixture.host.committed.isEmpty)
+
+            if isLoading {
+                fixture.provider.pendingResponse?.resume(returning: PagingProvider.results(for: "ni"))
+                fixture.provider.pendingResponse = nil
+                try await fixture.waitForCandidates()
+                // A passed-through Space must not queue a candidate selection.
+                try checkEqual(fixture.session.composition.pending, "ni")
+                try checkEqual(fixture.host.markedText, "ni")
+                try checkTrue(fixture.host.committed.isEmpty)
+            }
+        }
     }
 
     func arrowsMatchPageUpAndPageDown() async throws {
@@ -144,6 +185,11 @@ import PinyinApplication
         physicalCapsLock = session.mode == .englishDirect
         session.acknowledgeCapsLock(physicalCapsLock)
         return handled
+    }
+
+    func pressCapsLock() -> Bool {
+        physicalCapsLock.toggle()
+        return session.handleCapsLock(physicalCapsLock, host: host)
     }
 
     func compose(_ pinyin: String) async throws {

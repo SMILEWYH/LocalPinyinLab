@@ -75,7 +75,7 @@ SwiftPM 使用 Swift 6 语言模式与明确的访问级别。应用的所有会
 - `LocalSpeechPlayer` 每次查询当前本地 Apple 声音，优先目标地区，再选同语言声音；无对应语言声音时返回不可用，不回退到英语。它只管理朗读及声音选择，不处理快捷键或候选页索引。
 - `TranslationPreferences` 使用固定的 `local.pinyinlab.preferences` CFPreferences 域共享目标语言，读取前同步，默认英语；保存同步失败会抛错。保存成功后通过 `DistributedNotificationCenter` 通知失效，接收方重新读取并校验偏好，不直接采用通知中的值；无需 App Group entitlement。
 - `SpeechShortcutPreferences` 在同一偏好域独立保存朗读快捷键，读取时验证键位和组合，缺失或损坏时回退默认；保存失败回滚缓存，成功后通知设置 App 与活动输入会话重新读取。
-- `CapsLockController` 在系统边界读写 IOHID Caps Lock 状态。快捷键和大写锁定改变模式后，由仍处于活动状态的 IMK 宿主同步系统锁：英文为亮灯，中文为灭灯。写入前只确认预期基线，避免系统异步回声重复切换；普通 keyDown 的旧 flags 在写入等待期间及已确认的旧事件范围内不会覆盖新模式，真实 Caps 事件仍可表达新的操作。写入通过非阻塞读回确认，失效宿主/安全输入/切换输入源会终止旧确认。
+- `CapsLockController` 在系统边界读写 IOHID Caps Lock 状态。Caps Lock 或大写锁定改变模式后，由仍处于活动状态的 IMK 宿主同步系统锁：英文为亮灯，中文为灭灯。写入前只确认预期基线，避免系统异步回声重复切换；普通 keyDown 的旧 flags 在写入等待期间及已确认的旧事件范围内不会覆盖新模式，真实 Caps 事件仍可表达新的操作。写入通过非阻塞读回确认，失效宿主/安全输入/切换输入源会终止旧确认。
 - `SingleInstanceLock` 与 `InputSourceRegistration` 保持独立系统边界。取得锁后才创建 IMKServer，锁文件不删除。
 
 `Worker/main.m` 是正式运行组件。每次查询前后重置引擎与上下文，继续禁用苹果引擎自身的词频学习、联系人和附加词库；沙盒规则位于 `Worker/pinyin.sb`。个人排序在 Swift 基础设施层完成，不读取或改写 macOS 原生输入法的用户词库。`Probes/` 保留诊断及图标生成工具。

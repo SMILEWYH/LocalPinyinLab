@@ -27,7 +27,7 @@ settings_bundle() {
 <key>CFBundleDisplayName</key><string>拼音设置</string>
 <key>CFBundleExecutable</key><string>PinyinSettings</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>10</string>
+<key>CFBundleVersion</key><string>12</string>
 <key>CFBundleShortVersionString</key><string>1.4.0</string>
 <key>CFBundleIconFile</key><string>PinyinSettings.icns</string>
 <key>CFBundleDevelopmentRegion</key><string>zh-Hans</string>

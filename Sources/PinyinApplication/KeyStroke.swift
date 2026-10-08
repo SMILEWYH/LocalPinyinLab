@@ -28,7 +28,6 @@ public struct KeyStroke: Sendable {
         capturedCapsLock = capsLockForText ?? capsLock
     }
 
-    public var switchesMode: Bool { code == 49 && modifiers == [.control, .shift] }
     public var passesThrough: Bool { !modifiers.intersection([.control, .option, .command]).isEmpty }
 
     /// Caps Lock selects our input mode; Shift still controls ASCII letter case.

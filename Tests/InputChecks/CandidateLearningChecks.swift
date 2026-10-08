@@ -188,7 +188,7 @@ import PinyinApplication
 }
 
 private enum LearningCommitTrigger: CaseIterable {
-    case enter, punctuation, switchMode, finish, deactivate
+    case enter, punctuation, capsLock, finish, deactivate
     var suffix: String { self == .punctuation ? "，" : "" }
 }
 
@@ -225,7 +225,7 @@ private enum LearningCommitTrigger: CaseIterable {
         switch trigger {
         case .enter: try checkTrue(press(36))
         case .punctuation: try checkTrue(press(43, ","))
-        case .switchMode: try checkTrue(press(49, " ", modifiers: [.control, .shift]))
+        case .capsLock: try checkTrue(session.handleCapsLock(true, host: host))
         case .finish: session.finishComposition()
         case .deactivate: session.deactivate()
         }

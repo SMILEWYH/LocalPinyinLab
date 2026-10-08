@@ -20,7 +20,7 @@ import PinyinApplication
         try checkTrue(SpeechShortcut(modifiers: [], keyCode: 35) == nil)
         try checkTrue(SpeechShortcut(modifiers: [.control, .shift, .command], keyCode: 35) == nil)
         try checkTrue(SpeechShortcut(modifiers: [.command], keyCode: 65_535) == nil)
-        try checkTrue(SpeechShortcut(modifiers: [.control, .shift], keyCode: 49) == nil)
+        try checkEqual(SpeechShortcut(modifiers: [.control, .shift], keyCode: 49)?.displayName, "Control + Shift + Space")
         try checkTrue(SpeechShortcut(modifiers: [.shift], keyCode: 123) == nil)
         try checkTrue(SpeechShortcut(modifiers: [.shift], keyCode: 49) == nil)
         try checkTrue(SpeechShortcut(modifiers: [.shift], keyCode: 18) == nil)
@@ -30,14 +30,16 @@ import PinyinApplication
     func validatesPersistedValues() throws {
         let encoder = JSONEncoder()
         let decoder = JSONDecoder()
-        for shortcut in [SpeechShortcut.default, SpeechShortcut(modifiers: [.control, .shift], keyCode: 15)!] {
+        for shortcut in [SpeechShortcut.default,
+                         SpeechShortcut(modifiers: [.control, .shift], keyCode: 15)!,
+                         SpeechShortcut(modifiers: [.control, .shift], keyCode: 49)!] {
             try checkEqual(try decoder.decode(SpeechShortcut.self, from: encoder.encode(shortcut)), shortcut)
         }
         let invalid = [
             #"{"modifiers":0}"#, #"{"modifiers":8}"#, #"{"modifiers":15}"#,
             #"{"modifiers":-1,"keyCode":35}"#, #"{"modifiers":16,"keyCode":35}"#,
             #"{"modifiers":8,"keyCode":65535}"#, #"{"modifiers":8,"keyCode":-1}"#,
-            #"{"modifiers":3,"keyCode":49}"#, #"{"modifiers":1,"keyCode":123}"#,
+            #"{"modifiers":1,"keyCode":123}"#,
             #"{"modifiers":8,"keyCode":"P"}"#, #"{}"#
         ]
         for json in invalid {
@@ -165,11 +167,14 @@ import PinyinApplication
         try checkEqual(fixture.session.composition.pending, "ni")
         try checkTrue(fixture.host.committed.isEmpty)
 
-        fixture.session.setSpeechShortcut(SpeechShortcut(modifiers: [.control, .shift], keyCode: 15)!)
+        fixture.session.setSpeechShortcut(SpeechShortcut(modifiers: [.control, .shift], keyCode: 49)!)
         try checkFalse(fixture.press(35, "p", modifiers: [.command]))
-        try checkTrue(fixture.press(15, "r", modifiers: [.control, .shift]))
-        try checkTrue(fixture.press(15, "r", modifiers: [.control, .shift], isRepeat: true))
+        try checkTrue(fixture.press(49, " ", modifiers: [.control, .shift]))
+        try checkTrue(fixture.press(49, " ", modifiers: [.control, .shift], isRepeat: true))
         try checkEqual(fixture.speaker.calls.count, 2)
+        try checkEqual(fixture.session.mode, .chinesePinyin)
+        try checkEqual(fixture.session.composition.pending, "ni")
+        try checkTrue(fixture.host.committed.isEmpty)
         fixture.session.setSpeechShortcut(SpeechShortcut(modifiers: [.shift], keyCode: 48)!)
         try checkTrue(fixture.press(48, "\t", modifiers: [.shift]))
         try checkEqual(fixture.speaker.calls.count, 3)

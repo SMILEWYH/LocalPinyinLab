@@ -28,7 +28,6 @@ public struct SpeechShortcut: Equatable, Sendable, Codable {
         guard (2...3).contains(count) else { return "请选择两个或三个按键组成快捷键。" }
         if let keyCode {
             guard keyOptions.contains(where: { $0.code == keyCode }) else { return "不支持这个普通按键，请从列表中选择。" }
-            if keyCode == 49 && modifiers == [.control, .shift] { return "Control + Shift + Space 已用于切换中英文。" }
             // These keys already control composition even when Shift is held.
             let compositionKeys: Set<UInt16> = [18, 19, 20, 21, 23, 22, 26, 28, 25, 36, 49, 51, 53, 76, 116, 121, 123, 125, 126]
             if modifiers == [.shift] && compositionKeys.contains(keyCode) { return "这个组合已用于选词或编辑拼音，请选择其他按键。" }

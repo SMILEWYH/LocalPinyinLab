@@ -192,13 +192,6 @@ import PinyinCore
             if !key.isRepeat { speakHighlighted() }
             return true
         }
-        if key.switchesMode {
-            if !key.isRepeat {
-                modeState.toggle()
-                finishModeChange(showCase: false)
-            }
-            return true
-        }
         guard !key.passesThrough else { return false }
         let text = key.text(uppercaseLocked: isUppercaseLocked)
         if mode == .englishDirect { return forwardCorrectedText(text, original: key.characters, to: nextHost) }

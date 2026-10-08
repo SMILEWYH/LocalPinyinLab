@@ -41,18 +41,19 @@ import PinyinApplication
         try checkEqual(fixture.host.committed, ["，", "，"])
     }
 
-    func shortcutSwitchesPunctuation() throws {
-        let fixture = PunctuationFixture()
-        let toggle = KeyStroke(code: 49, characters: " ", modifiers: [.control, .shift])
-        try checkTrue(fixture.session.handle(toggle, host: fixture.host))
-        fixture.session.acknowledgeCapsLock(true)
-        try checkTrue(fixture.session.handle(KeyStroke(code: 49, characters: " ", modifiers: [.control, .shift], isRepeat: true, capsLock: true), host: fixture.host))
-        try checkFalse(fixture.session.handle(KeyStroke(code: 47, characters: ".", capsLock: true), host: fixture.host))
-        try checkEqual(fixture.session.mode, .englishDirect)
-        try checkTrue(fixture.session.handle(KeyStroke(code: 49, characters: " ", modifiers: [.control, .shift], capsLock: true), host: fixture.host))
-        fixture.session.acknowledgeCapsLock(false)
-        try checkTrue(fixture.session.handle(KeyStroke(code: 47, characters: "."), host: fixture.host))
-        try checkEqual(fixture.host.committed, ["。"])
+    func controlShiftSpacePassesThroughWithoutChangingMode() throws {
+        for capsLock in [false, true] {
+            let fixture = PunctuationFixture()
+            if capsLock { try checkTrue(fixture.session.handleCapsLock(true, host: fixture.host)) }
+            let key = KeyStroke(code: 49, characters: " ", modifiers: [.control, .shift], capsLock: capsLock)
+            try checkFalse(fixture.session.handle(key, host: fixture.host))
+            try checkEqual(fixture.session.mode, capsLock ? .englishDirect : .chinesePinyin)
+            try checkFalse(fixture.session.isUppercaseLocked)
+            try checkTrue(fixture.host.committed.isEmpty)
+            try checkTrue(fixture.session.composition.isEmpty)
+            try checkEqual(fixture.session.handle(KeyStroke(code: 47, characters: ".", capsLock: capsLock), host: fixture.host), !capsLock)
+            try checkEqual(fixture.host.committed, capsLock ? [] : ["。"])
+        }
     }
 
     func shortcutsPassThrough() throws {

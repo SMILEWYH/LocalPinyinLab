@@ -4,19 +4,16 @@ import PinyinApplication
 @MainActor final class UppercaseChecks {
     func togglesFromBothModesAndCapsStates() throws {
         for capsLock in [false, true] {
-            for usesShortcut in [false, true] {
-                let fixture = UppercaseFixture(capsLock: capsLock)
-                if usesShortcut { try fixture.switchMode() }
-                try checkTrue(fixture.pressCapsLock(modifiers: .shift))
-                try checkEqual(fixture.session.mode, .englishDirect)
-                try checkTrue(fixture.session.isUppercaseLocked)
-                try checkTrue(fixture.pressCapsLock(modifiers: .shift))
-                try checkEqual(fixture.session.mode, .englishDirect)
-                try checkFalse(fixture.session.isUppercaseLocked)
-                try checkEqual(fixture.presenter.caseStatuses, [true, false])
-                try checkTrue(fixture.host.committed.isEmpty)
-                try checkTrue(fixture.host.markedText.isEmpty)
-            }
+            let fixture = UppercaseFixture(capsLock: capsLock)
+            try checkTrue(fixture.pressCapsLock(modifiers: .shift))
+            try checkEqual(fixture.session.mode, .englishDirect)
+            try checkTrue(fixture.session.isUppercaseLocked)
+            try checkTrue(fixture.pressCapsLock(modifiers: .shift))
+            try checkEqual(fixture.session.mode, .englishDirect)
+            try checkFalse(fixture.session.isUppercaseLocked)
+            try checkEqual(fixture.presenter.caseStatuses, [true, false])
+            try checkTrue(fixture.host.committed.isEmpty)
+            try checkTrue(fixture.host.markedText.isEmpty)
         }
     }
 
@@ -73,22 +70,16 @@ import PinyinApplication
     }
 
     func returningToChineseClearsUppercase() throws {
-        for usesCapsLock in [false, true] {
-            let fixture = UppercaseFixture()
-            try checkTrue(fixture.pressCapsLock(modifiers: .shift))
-            if usesCapsLock {
-                try checkTrue(fixture.pressCapsLock())
-            } else {
-                try fixture.switchMode()
-            }
-            try checkEqual(fixture.session.mode, .chinesePinyin)
-            try checkFalse(fixture.session.isUppercaseLocked)
-            try fixture.switchMode()
-            fixture.type("A")
-            try checkEqual(fixture.host.committed, ["a"])
-            try checkEqual(fixture.session.mode, .englishDirect)
-            try checkFalse(fixture.session.isUppercaseLocked)
-        }
+        let fixture = UppercaseFixture()
+        try checkTrue(fixture.pressCapsLock(modifiers: .shift))
+        try checkTrue(fixture.pressCapsLock())
+        try checkEqual(fixture.session.mode, .chinesePinyin)
+        try checkFalse(fixture.session.isUppercaseLocked)
+        try checkTrue(fixture.pressCapsLock())
+        fixture.type("A")
+        try checkEqual(fixture.host.committed, ["a"])
+        try checkEqual(fixture.session.mode, .englishDirect)
+        try checkFalse(fixture.session.isUppercaseLocked)
     }
 
     func onlyLettersChangeAndShortcutsPassThrough() throws {
@@ -143,7 +134,7 @@ import PinyinApplication
             fixture.host.onCommit = {
                 switch action {
                 case 0:
-                    _ = fixture.session.handle(KeyStroke(code: 49, characters: " ", modifiers: [.control, .shift], capsLock: true), host: fixture.host)
+                    _ = fixture.session.handleCapsLock(false, host: fixture.host)
                 case 1:
                     fixture.session.cancel()
                 default:
@@ -163,9 +154,8 @@ import PinyinApplication
         try checkTrue(fixture.pressCapsLock())
         try checkFalse(fixture.session.handleCapsLock(true, host: fixture.host))
         try checkEqual(fixture.presenter.modeStatuses, [.englishDirect])
-        try fixture.switchMode()
-        try checkTrue(fixture.session.handle(KeyStroke(code: 49, characters: " ", modifiers: [.control, .shift],
-                                                      isRepeat: true, capsLock: false), host: fixture.host))
+        try checkTrue(fixture.pressCapsLock())
+        try checkFalse(fixture.session.handleCapsLock(false, host: fixture.host))
         try checkEqual(fixture.presenter.modeStatuses, [.englishDirect, .chinesePinyin])
         fixture.session.deactivate()
         fixture.session.activate(capsLock: false)
@@ -174,47 +164,40 @@ import PinyinApplication
     }
 
     func modeStatusSurvivesLateCandidates() async throws {
-        for usesCapsLock in [false, true] {
-            let fixture = UppercaseFixture()
-            fixture.provider.delaysResponse = true
-            try checkTrue(fixture.session.handle(KeyStroke(code: 45, characters: "ni"), host: fixture.host))
-            for _ in 0..<100 where fixture.provider.pendingResponse == nil { await Task.yield() }
-            try checkTrue(fixture.provider.pendingResponse != nil)
-            if usesCapsLock { try checkTrue(fixture.session.handleCapsLock(true, host: fixture.host)) }
-            else { try fixture.switchMode(capsLock: false) }
-            fixture.provider.pendingResponse?.resume(returning: [Candidate(text: "你", consumedCount: 2)])
-            fixture.provider.pendingResponse = nil
-            for _ in 0..<100 { await Task.yield() }
-            try checkEqual(fixture.host.committed, ["ni"])
-            try checkEqual(fixture.session.queryState, .idle)
-            try checkTrue(fixture.session.candidates.rows.isEmpty)
-            try checkFalse(fixture.presenter.candidatesVisible)
-            try checkEqual(fixture.presenter.modeStatuses, [.englishDirect])
-        }
+        let fixture = UppercaseFixture()
+        fixture.provider.delaysResponse = true
+        try checkTrue(fixture.session.handle(KeyStroke(code: 45, characters: "ni"), host: fixture.host))
+        for _ in 0..<100 where fixture.provider.pendingResponse == nil { await Task.yield() }
+        try checkTrue(fixture.provider.pendingResponse != nil)
+        try checkTrue(fixture.pressCapsLock())
+        fixture.provider.pendingResponse?.resume(returning: [Candidate(text: "你", consumedCount: 2)])
+        fixture.provider.pendingResponse = nil
+        for _ in 0..<100 { await Task.yield() }
+        try checkEqual(fixture.host.committed, ["ni"])
+        try checkEqual(fixture.session.queryState, .idle)
+        try checkTrue(fixture.session.candidates.rows.isEmpty)
+        try checkFalse(fixture.presenter.candidatesVisible)
+        try checkEqual(fixture.presenter.modeStatuses, [.englishDirect])
     }
 
     func reentrantCommitCannotShowObsoleteMode() throws {
-        for usesCapsLock in [false, true] {
-            for action in 0..<3 {
-                let fixture = UppercaseFixture()
-                try checkTrue(fixture.session.handle(KeyStroke(code: 45, characters: "ni"), host: fixture.host))
-                fixture.host.onCommit = {
-                    switch action {
-                    case 0:
-                        _ = fixture.session.handle(KeyStroke(code: 49, characters: " ", modifiers: [.control, .shift],
-                                                             capsLock: usesCapsLock), host: fixture.host)
-                    case 1:
-                        fixture.session.cancel()
-                    default:
-                        _ = fixture.session.handle(KeyStroke(code: 0, capsLock: usesCapsLock), host: UppercaseHost())
-                        _ = fixture.session.handle(KeyStroke(code: 0, capsLock: usesCapsLock), host: fixture.host)
-                    }
+        for action in 0..<3 {
+            let fixture = UppercaseFixture()
+            try checkTrue(fixture.session.handle(KeyStroke(code: 45, characters: "ni"), host: fixture.host))
+            fixture.host.onCommit = {
+                switch action {
+                case 0:
+                    _ = fixture.session.handleCapsLock(false, host: fixture.host)
+                case 1:
+                    fixture.session.cancel()
+                default:
+                    _ = fixture.session.handle(KeyStroke(code: 0, capsLock: true), host: UppercaseHost())
+                    _ = fixture.session.handle(KeyStroke(code: 0, capsLock: true), host: fixture.host)
                 }
-                if usesCapsLock { try checkTrue(fixture.session.handleCapsLock(true, host: fixture.host)) }
-                else { try fixture.switchMode(capsLock: false) }
-                try checkEqual(fixture.host.committed, ["ni"])
-                try checkEqual(fixture.presenter.modeStatuses, action == 0 ? [.chinesePinyin] : [])
             }
+            try checkTrue(fixture.pressCapsLock())
+            try checkEqual(fixture.host.committed, ["ni"])
+            try checkEqual(fixture.presenter.modeStatuses, action == 0 ? [.chinesePinyin] : [])
         }
     }
 
@@ -236,10 +219,10 @@ import PinyinApplication
         }
     }
 
-    func ordinaryCapsStaysAlignedAfterShortcuts() throws {
+    func ordinaryCapsStaysAlignedAfterModeAndUppercaseChanges() throws {
         for capsLock in [false, true] {
             let fixture = UppercaseFixture(capsLock: capsLock)
-            try fixture.switchMode()
+            try checkTrue(fixture.pressCapsLock())
             try checkEqual(fixture.physicalCapsLock, !capsLock)
             try checkTrue(fixture.pressCapsLock())
             try checkEqual(fixture.session.mode, capsLock ? .englishDirect : .chinesePinyin)
@@ -328,12 +311,6 @@ import PinyinApplication
         let changed = session.handleCapsLock(physicalCapsLock, modifiers: modifiers, host: host)
         synchronizeHardware()
         return changed
-    }
-
-    func switchMode(capsLock: Bool? = nil) throws {
-        try checkTrue(session.handle(KeyStroke(code: 49, characters: " ", modifiers: [.control, .shift],
-                                               capsLock: capsLock ?? physicalCapsLock), host: host))
-        synchronizeHardware()
     }
 
     func type(_ text: String, capsLock: Bool? = nil, modifiers: KeyModifiers = [], isRepeat: Bool = false,
