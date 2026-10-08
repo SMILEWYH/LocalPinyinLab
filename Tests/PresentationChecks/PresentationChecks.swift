@@ -5,10 +5,11 @@ import PinyinPresentation
 /// Offscreen AppKit checks: does not register an input source or show a window.
 @main
 struct PresentationChecks {
-    @MainActor static func main() throws {
+    @MainActor static func main() async throws {
         _ = NSApplication.shared
         checkNativeCapsLockEvents()
         checkCandidateWindowBehavior()
+        try await checkCandidateWindowRecovery()
         let translation = "This is a longer English translation used to verify that the selected candidate wraps without moving the window or hiding the original Chinese text."
         let longChinese = "我们正在检查较长中文候选和英文译文的显示效果"
         let rows = (0..<9).map { index in
@@ -62,7 +63,7 @@ struct PresentationChecks {
         for (name, view) in [("pending", shortView), ("translated", expanded), ("short-display", constrained), ("narrow-display", narrow), ("loading", loading), ("arabic", arabic)] {
             try render(view, name: name, directory: directory)
         }
-        print("Presentation checks passed: host-aware candidate window levels without activation, native Caps Lock override/edge events, bounded/stable layout, expansion, original row indices, target-language AX state, offscreen rendering (6 cases).")
+        print("Presentation checks passed: Space recovery and cancellation (7 scenarios), host-aware candidate window levels without activation, native Caps Lock override/edge events, bounded/stable layout, expansion, original row indices, target-language AX state, offscreen rendering (6 cases).")
     }
 
     @MainActor private static func checkNativeCapsLockEvents() {

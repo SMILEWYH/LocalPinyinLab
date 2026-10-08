@@ -4,6 +4,7 @@ import Carbon
 import PinyinApplication
 import PinyinInfrastructure
 import PinyinPresentation
+import OSLog
 
 /// IMK lifecycle and event adaptation only. Composition rules live in InputSession.
 @objc(LocalPinyinInputController)
@@ -19,12 +20,15 @@ import PinyinPresentation
     private var speechActivityBaseline: [UInt32]?
     private var speechGestureBeganAt: TimeInterval?
     private var host: IMKHost?
+    private let diagnosticID = UUID().uuidString
+    private static let lifecycleLogger = Logger(subsystem: "local.pinyinlab.inputmethod", category: "InputController")
     private lazy var session = InputSession(
         provider: PinyinSession.shared,
         translator: AppleTranslator(),
         speaker: LocalSpeechPlayer(),
         presenter: CandidatePanel(anchor: { [weak self] in self?.host?.anchor ?? .zero },
-                                  windowLevel: { [weak self] in self?.host?.windowLevel ?? 0 }),
+                                  windowLevel: { [weak self] in self?.host?.windowLevel ?? 0 },
+                                  diagnosticOwner: diagnosticID),
         modeState: InputController.modeState,
         translationLanguage: TranslationPreferences.targetLanguage,
         speechShortcut: SpeechShortcutPreferences.shortcut)
@@ -82,6 +86,7 @@ import PinyinPresentation
         super.activateServer(sender)
         nonisolated(unsafe) let controller = self
         MainActor.assumeIsolated {
+            Self.lifecycleLogger.notice("owner=\(controller.diagnosticID, privacy: .public) event=activate")
             controller.lifecycleRevision &+= 1
             controller.isActive = true
             let notifications = DistributedNotificationCenter.default()
@@ -311,6 +316,7 @@ import PinyinPresentation
     override func commitComposition(_ sender: Any!) {
         nonisolated(unsafe) let controller = self
         MainActor.assumeIsolated {
+            Self.lifecycleLogger.notice("owner=\(controller.diagnosticID, privacy: .public) event=commitComposition")
             controller.speechActivityBaseline = nil
             controller.session.deactivate()
         }
@@ -320,6 +326,7 @@ import PinyinPresentation
         NSLog("LocalPinyin lifecycle: input controller deactivated")
         nonisolated(unsafe) let controller = self
         MainActor.assumeIsolated {
+            Self.lifecycleLogger.notice("owner=\(controller.diagnosticID, privacy: .public) event=deactivate")
             controller.lifecycleRevision &+= 1
             controller.isActive = false
             DistributedNotificationCenter.default().removeObserver(controller,

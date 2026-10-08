@@ -111,6 +111,71 @@ import PinyinApplication
         try checkEqual(fixture.session.composition.pending, "nihao")
         try checkEqual(fixture.session.candidates.rows[0].speechText, "current0")
         fixture.finish()
+
+        try await reactivationRejectsLateCandidates()
+        try await reactivationRejectsLateTranslation()
+    }
+
+    private func reactivationRejectsLateCandidates() async throws {
+        let fixture = AsyncInputFixture()
+        defer { fixture.finish() }
+        fixture.provider.deferred = true
+        try checkTrue(fixture.press(45, "ni"))
+        try await fixture.wait { fixture.provider.pending.count == 1 }
+
+        fixture.session.deactivate()
+        try checkFalse(fixture.presenter.isVisible)
+        try checkEqual(fixture.host.committed, ["ni"])
+        fixture.session.activate(capsLock: false)
+        try checkTrue(fixture.press(4, "hao"))
+        try await fixture.wait { fixture.provider.pending.count == 2 }
+
+        // The old provider deliberately ignores cancellation and answers after
+        // the next activation has already started a different composition.
+        fixture.provider.complete(0)
+        for _ in 0..<100 { await Task.yield() }
+        try checkEqual(fixture.session.queryState, .querying)
+        try checkEqual(fixture.session.composition.pending, "hao")
+        try checkEqual(fixture.host.markedText, "hao")
+        try checkTrue(fixture.presenter.isVisible)
+        try checkEqual(fixture.presenter.loading, "hao")
+        try checkTrue(fixture.presenter.presentation == nil)
+
+        fixture.provider.complete(1)
+        try await fixture.wait { fixture.session.queryState == .ready }
+        try checkTrue(fixture.presenter.isVisible)
+        try checkEqual(fixture.presenter.presentation?.markedText, "hao")
+        try checkEqual(fixture.presenter.presentation?.rows.first?.candidate.consumedCount, 3)
+        try checkEqual(fixture.host.committed, ["ni"])
+    }
+
+    private func reactivationRejectsLateTranslation() async throws {
+        let fixture = AsyncInputFixture()
+        defer { fixture.finish() }
+        try checkTrue(fixture.press(45, "ni"))
+        try await fixture.wait { fixture.translator.calls.count == 1 }
+
+        fixture.session.deactivate()
+        try checkFalse(fixture.presenter.isVisible)
+        fixture.session.activate(capsLock: false)
+        try checkTrue(fixture.press(4, "hao"))
+        try await fixture.wait { fixture.translator.calls.count == 2 }
+
+        fixture.translator.complete(0, prefix: "obsolete")
+        for _ in 0..<100 { await Task.yield() }
+        try checkEqual(fixture.session.queryState, .ready)
+        try checkEqual(fixture.session.composition.pending, "hao")
+        try checkEqual(fixture.host.markedText, "hao")
+        try checkTrue(fixture.presenter.isVisible)
+        try checkEqual(fixture.presenter.presentation?.markedText, "hao")
+        try checkEqual(fixture.presenter.presentation?.rows.first?.translation, .pending)
+
+        fixture.translator.complete(1, prefix: "current")
+        try await fixture.wait { fixture.session.candidates.rows[0].speechText != nil }
+        try checkTrue(fixture.presenter.isVisible)
+        try checkEqual(fixture.presenter.presentation?.markedText, "hao")
+        try checkEqual(fixture.presenter.presentation?.rows.first?.speechText, "current0")
+        try checkEqual(fixture.host.committed, ["ni"])
     }
 
     func failedTranslationIsNotRetriedByHighlightChanges() async throws {
@@ -197,11 +262,31 @@ import PinyinApplication
 
 @MainActor private final class AsyncInputPresenter: CandidatePresenting {
     var loading: String?
-    func show(_ presentation: CandidatePresentation) { loading = nil }
-    func showLoading(pinyin: String) { loading = pinyin }
-    func showModeStatus(mode: InputMode) { loading = nil }
-    func showCaseStatus(uppercaseLocked: Bool) { loading = nil }
-    func hide() { loading = nil }
+    var presentation: CandidatePresentation?
+    var isVisible = false
+
+    func show(_ presentation: CandidatePresentation) {
+        loading = nil
+        self.presentation = presentation
+        isVisible = true
+    }
+    func showLoading(pinyin: String) {
+        loading = pinyin
+        presentation = nil
+        isVisible = true
+    }
+    func showModeStatus(mode: InputMode) { showStatus() }
+    func showCaseStatus(uppercaseLocked: Bool) { showStatus() }
+    private func showStatus() {
+        loading = nil
+        presentation = nil
+        isVisible = true
+    }
+    func hide() {
+        loading = nil
+        presentation = nil
+        isVisible = false
+    }
 }
 
 @MainActor private final class AsyncInputHost: InputHost {

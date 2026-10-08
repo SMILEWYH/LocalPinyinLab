@@ -8,11 +8,34 @@ public final class CandidatePanel: CandidatePresenting {
     private let windowLevel: () -> Int
     private var statusTask: Task<Void, Never>?
     private var statusID: UUID?
-    package let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    private var recoveryTask: Task<Void, Never>?
+    private var presentationID: UUID?
+    private let panelFactory: () -> NSPanel
+    private let foregroundPID: () -> pid_t?
+    private let diagnosticOwner: String
+    private lazy var diagnostics = CandidateWindowDiagnostics(panel: panel, owner: diagnosticOwner)
+    package private(set) var panel: NSPanel
 
-    public init(anchor: @escaping () -> NSRect = { .zero }, windowLevel: @escaping () -> Int = { 0 }) {
+    public convenience init(anchor: @escaping () -> NSRect = { .zero }, windowLevel: @escaping () -> Int = { 0 },
+                            diagnosticOwner: String = UUID().uuidString) {
+        self.init(anchor: anchor, windowLevel: windowLevel, diagnosticOwner: diagnosticOwner,
+                  panelFactory: { NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false) },
+                  foregroundPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier })
+    }
+
+    package init(anchor: @escaping () -> NSRect = { .zero }, windowLevel: @escaping () -> Int = { 0 },
+                 diagnosticOwner: String = UUID().uuidString, panelFactory: @escaping () -> NSPanel,
+                 foregroundPID: @escaping () -> pid_t?) {
         self.anchor = anchor
         self.windowLevel = windowLevel
+        self.diagnosticOwner = diagnosticOwner
+        self.panelFactory = panelFactory
+        self.foregroundPID = foregroundPID
+        panel = panelFactory()
+        configurePanel()
+    }
+
+    private func configurePanel() {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -22,7 +45,7 @@ public final class CandidatePanel: CandidatePresenting {
         updateWindowLevel()
     }
 
-    deinit { statusTask?.cancel() }
+    deinit { statusTask?.cancel(); recoveryTask?.cancel() }
 
     public func show(rows: [CandidateRow], pinyin: String, selected: Int, page: Int, totalPages: Int, anchor: NSRect, status: String? = nil,
                      translationLanguage: TranslationLanguage = .english) {
@@ -46,6 +69,9 @@ public final class CandidatePanel: CandidatePresenting {
     }
 
     private func display(_ view: NSView, size: NSSize, anchor: NSRect, isStatus: Bool = false) {
+        recoveryTask?.cancel()
+        let identifier = UUID()
+        presentationID = identifier
         updateWindowLevel()
         let bounds = visibleBounds(at: anchor)
         let size = NSSize(width: min(size.width, bounds.width), height: min(size.height, bounds.height))
@@ -56,7 +82,50 @@ public final class CandidatePanel: CandidatePresenting {
                              y: min(max(preferred.y, bounds.minY), max(bounds.minY, bounds.maxY - size.height)))
         panel.contentView = view
         panel.setFrame(NSRect(origin: origin, size: size), display: true)
+        diagnostics.willShow()
         panel.orderFrontRegardless()
+        diagnostics.didShow()
+        scheduleWindowRecovery(for: identifier)
+    }
+
+    private func scheduleWindowRecovery(for identifier: UUID) {
+        let expectedPanel = panel
+        guard let expectedPID = foregroundPID() else { return }
+        recoveryTask = Task { [weak self, weak expectedPanel] in
+            // WindowServer can remove a sticky panel from every Space during
+            // Space destruction. AppKit initially reports it as visible; wait
+            // for its Space state to settle before checking the association.
+            do { try await Task.sleep(for: .milliseconds(150)) }
+            catch { return }
+            guard !Task.isCancelled, let self, let expectedPanel,
+                  self.presentationID == identifier, self.panel === expectedPanel,
+                  self.foregroundPID() == expectedPID, !expectedPanel.isOnActiveSpace else { return }
+            self.recoveryTask = nil
+            self.rebuildWindow()
+        }
+    }
+
+    private func rebuildWindow() {
+        let previous = panel
+        let view = previous.contentView
+        let frame = previous.frame
+        let level = previous.level
+        diagnostics.willRebuild()
+        diagnostics.willHide()
+        previous.orderOut(nil)
+        previous.contentView = nil
+        panel = panelFactory()
+        configurePanel()
+        panel.level = level
+        panel.contentView = view
+        panel.setFrame(frame, display: true)
+        diagnostics = CandidateWindowDiagnostics(panel: panel, owner: diagnosticOwner)
+        diagnostics.willShow()
+        panel.orderFrontRegardless()
+        diagnostics.didShow()
+        NSAccessibility.post(element: panel, notification: .layoutChanged)
+        // Do not schedule another recovery here. Each presentation gets one
+        // attempt, and hiding or a newer presentation invalidates the old one.
     }
 
     package func updateWindowLevel() {
@@ -121,7 +190,12 @@ public final class CandidatePanel: CandidatePresenting {
 
     public func hide() {
         cancelStatus()
+        presentationID = nil
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        diagnostics.willHide()
         panel.orderOut(nil)
+        diagnostics.didHide()
     }
 
     public func showLoading(pinyin: String) {
