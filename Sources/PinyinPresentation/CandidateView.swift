@@ -6,10 +6,12 @@ import PinyinCore
 public final class CandidateView: NSView {
     private static let textFont = NSFont.systemFont(ofSize: 16)
     private static let annotationFont = NSFont.systemFont(ofSize: 12)
+    private static let partOfSpeechFont = NSFont.systemFont(ofSize: 11)
     private static let indexFont = NSFont.systemFont(ofSize: 11)
     private static let padding: CGFloat = 8
     private static let indexGap: CGFloat = 8
     private static let columnGap: CGFloat = 40
+    private static let partOfSpeechGap: CGFloat = 6
     private static let maximumWidth: CGFloat = 600
     private var size: NSSize
 
@@ -23,7 +25,13 @@ public final class CandidateView: NSView {
         let widthLimit = max(1, min(Self.maximumWidth, maximumSize.width))
         let textNaturalWidth = rows.map { Self.width($0.text, font: Self.textFont) }.max() ?? 0
         let glossNaturalWidth = rows.map { Self.width($0.translationText(for: translationLanguage), font: Self.annotationFont) }.max() ?? 0
-        let rowNaturalWidth = rows.isEmpty ? 0 : 12 + Self.indexGap + textNaturalWidth + Self.columnGap + glossNaturalWidth
+        let partsOfSpeech = rows.map { $0.translationPartOfSpeech(for: translationLanguage) }
+        let partOfSpeechNaturalWidth = partsOfSpeech.compactMap { $0 }.map {
+            Self.width($0.abbreviation, font: Self.partOfSpeechFont)
+        }.max() ?? 0
+        let annotationNaturalWidth = glossNaturalWidth + partOfSpeechNaturalWidth
+            + (partOfSpeechNaturalWidth > 0 ? Self.partOfSpeechGap : 0)
+        let rowNaturalWidth = rows.isEmpty ? 0 : 12 + Self.indexGap + textNaturalWidth + Self.columnGap + annotationNaturalWidth
         let naturalWidth = max(rowNaturalWidth, Self.width(pinyin + "│", font: Self.annotationFont),
                                Self.width(footer, font: Self.indexFont)) + Self.padding * 2
         let width = min(max(naturalWidth, minimumWidth), widthLimit)
@@ -38,8 +46,14 @@ public final class CandidateView: NSView {
         // Keep short columns at natural width. Share constrained space when both
         // are long, giving any unused translation space back to Chinese text.
         var textWidth = min(textNaturalWidth, floor(columnsWidth * 0.46))
-        let glossWidth = min(glossNaturalWidth, columnsWidth - textWidth)
-        textWidth = min(textNaturalWidth, columnsWidth - glossWidth)
+        let annotationWidth = min(annotationNaturalWidth, columnsWidth - textWidth)
+        textWidth = min(textNaturalWidth, columnsWidth - annotationWidth)
+        // Reserve a shared POS column even for untagged rows, so all translations
+        // align. On extremely narrow screens keep at least some translation room.
+        let partOfSpeechWidth = min(partOfSpeechNaturalWidth, max(0, annotationWidth - min(12, glossNaturalWidth)))
+        let partOfSpeechGap = partOfSpeechWidth > 0
+            ? min(Self.partOfSpeechGap, max(0, annotationWidth - partOfSpeechWidth - 1)) : 0
+        let glossWidth = max(0, annotationWidth - partOfSpeechWidth - partOfSpeechGap)
         let headerHeight = min(Self.height(pinyin + "│", font: Self.annotationFont, width: contentWidth) + 8,
                                maximumHeight / 3)
         let footerHeight = min(Self.lineHeight(Self.indexFont) + 8, maximumHeight / 4)
@@ -88,9 +102,17 @@ public final class CandidateView: NSView {
             let contentHeight = max(0, height - 8)
             number.frame = NSRect(x: padding / 2, y: 6, width: indexWidth, height: max(0, height - 10))
             chinese.frame = NSRect(x: textX, y: 4, width: textWidth, height: contentHeight)
-            gloss.frame = NSRect(x: textX + textWidth + columnGap, y: 4, width: glossWidth, height: contentHeight)
+            let annotationX = textX + textWidth + columnGap
+            gloss.frame = NSRect(x: annotationX + partOfSpeechWidth + partOfSpeechGap, y: 4, width: glossWidth, height: contentHeight)
             for label in [number, chinese, gloss] {
                 // Expose one complete candidate row to VoiceOver, including untruncated text.
+                label.setAccessibilityElement(false)
+                rowView.addSubview(label)
+            }
+            if let partOfSpeech = partsOfSpeech[index] {
+                let label = Self.label(partOfSpeech.abbreviation, font: Self.partOfSpeechFont,
+                                       color: selected ? NSColor.white.withAlphaComponent(0.78) : NSColor(white: 0.52, alpha: 1), lines: 1)
+                label.frame = NSRect(x: annotationX, y: 5, width: partOfSpeechWidth, height: max(0, contentHeight - 1))
                 label.setAccessibilityElement(false)
                 rowView.addSubview(label)
             }
