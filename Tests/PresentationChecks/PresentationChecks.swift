@@ -7,7 +7,8 @@ import PinyinPresentation
 struct PresentationChecks {
     @MainActor static func main() async throws {
         _ = NSApplication.shared
-        checkTranslationPartOfSpeechInference()
+        await checkTranslationPartOfSpeechInference()
+        try await checkIncrementalCandidates()
         checkNativeCapsLockEvents()
         checkCandidateWindowBehavior()
         try await checkCandidateWindowRecovery()
@@ -38,7 +39,7 @@ struct PresentationChecks {
                                        highlighted: 0, footer: "第 1/1 页")
         require(longHeader.preferredSize.width > compact.preferredSize.width && longHeader.preferredSize.width <= 600,
                 "header text should participate in content sizing while respecting the cap")
-        require(candidateRows(longHeader)[0].subviews[1].frame.width == candidateRows(compact)[0].subviews[1].frame.width,
+        require(candidateLabels(candidateRows(longHeader)[0])[1].frame.width == candidateLabels(candidateRows(compact)[0])[1].frame.width,
                 "a long header must not stretch the Chinese column")
         let footerText = "英语译文 · 较长状态说明应撑开窗口，同时保持候选与译文左对齐"
         let longFooter = CandidateView(rows: compactRows, pinyin: "nihao", highlighted: 0, footer: footerText)
@@ -70,7 +71,7 @@ struct PresentationChecks {
         for row in candidateRows(multiline) {
             require(row.accessibilityLabel()?.contains(multilineChinese) == true && row.accessibilityLabel()?.contains(multilineTranslation) == true,
                     "AX must preserve all selected and unselected multiline text")
-            for label in row.subviews.dropFirst().compactMap({ $0 as? NSTextField }) {
+            for label in candidateLabels(row).dropFirst() {
                 let lineHeight = NSLayoutManager().defaultLineHeight(for: label.font!)
                 require(label.bounds.height > lineHeight * 3, "long candidate and translation must not be limited to three lines")
                 checkWrappedTextFits(label)
@@ -82,7 +83,7 @@ struct PresentationChecks {
                                                          translation: .ready(unbrokenText))],
                                      pinyin: "wenben", highlighted: 0, footer: "第 1/1 页",
                                      maximumSize: NSSize(width: 360, height: 1000))
-        let unbrokenGloss = candidateRows(unbroken)[0].subviews[2] as! NSTextField
+        let unbrokenGloss = candidateLabels(candidateRows(unbroken)[0])[2]
         require(unbroken.preferredSize.width == 360, "long unbroken words must respect available width")
         require(unbrokenGloss.bounds.height > NSLayoutManager().defaultLineHeight(for: unbrokenGloss.font!) * 3,
                 "long unbroken translations must wrap across more than three lines")
@@ -146,7 +147,7 @@ struct PresentationChecks {
         for (name, view) in scenarios {
             try render(view, name: name, directory: directory)
         }
-        print("Presentation checks passed: Space recovery, cancellation and visible window reuse (8 scenarios), Touch Bar selection updates and owner-scoped lifecycle cleanup, host-aware candidate window levels without activation, native Caps Lock override/edge events, content-sized left-aligned columns with 40-point spacing and a 600-point cap, English POS labels with aligned translations and narrow-screen clamping, automatic wrapping for every candidate and translation, original row indices, target-language AX state, offscreen rendering (\(scenarios.count) cases).")
+        print("Presentation checks passed: selection-only view reuse, asynchronous POS cancellation and stale-result isolation, full-text keyboard scrolling to both ends, Space recovery, cancellation and visible window reuse (8 scenarios), Touch Bar selection updates and owner-scoped lifecycle cleanup, host-aware candidate window levels without activation, native Caps Lock override/edge events, content-sized left-aligned columns with 40-point spacing and a 600-point cap, English POS labels with aligned translations and narrow-screen clamping, automatic wrapping for every candidate and translation, original row indices, target-language AX state, offscreen rendering (\(scenarios.count) cases).")
     }
 
     @MainActor private static func checkTranslationPartsOfSpeech() -> [(String, CandidateView)] {
@@ -157,16 +158,17 @@ struct PresentationChecks {
         let rows = samples.map {
             CandidateRow(candidate: Candidate(text: $0.0, consumedCount: 2), translation: .ready($0.1))
         }
-        let view = CandidateView(rows: rows, pinyin: "pingguo", highlighted: 1, footer: "英语译文 · 第 1/1 页")
+        let annotations: [TranslationPartOfSpeech?] = [.noun, .adjective, .adverb, .verb, nil]
+        let view = CandidateView(rows: rows, pinyin: "pingguo", highlighted: 1, footer: "英语译文 · 第 1/1 页", annotations: annotations)
         let renderedRows = candidateRows(view)
         require(renderedRows.count == samples.count, "POS examples must fit without hiding candidates")
         for (row, sample) in zip(renderedRows, samples) {
-            let translation = row.subviews[2] as! NSTextField
+            let translation = candidateLabels(row)[2]
             require(translation.stringValue == sample.1, "a POS label must preserve the original translation text")
             checkWrappedTextFits(translation)
             if let abbreviation = sample.2 {
-                require(row.subviews.count == 4, "single-word translations must expose a separate POS label")
-                let label = row.subviews[3] as! NSTextField
+                require(candidateLabels(row).count == 4, "single-word translations must expose a separate POS label")
+                let label = candidateLabels(row)[3]
                 require(label.stringValue == abbreviation, "English translation has the wrong POS abbreviation")
                 require(abs(translation.frame.minX - label.frame.maxX - 6) < 0.01,
                         "the POS label must sit six points to the left of the translation")
@@ -175,7 +177,7 @@ struct PresentationChecks {
                 require(!label.isAccessibilityElement(), "POS should be announced as part of its complete candidate row")
                 checkSingleLineFits(label)
             } else {
-                require(row.subviews.count == 3, "translation phrases must not receive a guessed POS label")
+                require(candidateLabels(row).count == 3, "translation phrases must not receive a guessed POS label")
             }
         }
 
@@ -184,26 +186,26 @@ struct PresentationChecks {
             CandidateRow(candidate: Candidate(text: "美丽", consumedCount: 2), translation: .unavailable(.modelsNotInstalled))
         ]
         let unavailable = CandidateView(rows: unavailableRows, pinyin: "pingguo", highlighted: 0, footer: "英语译文 · 第 1/1 页")
-        require(candidateRows(unavailable).allSatisfy { $0.subviews.count == 3 },
+        require(candidateRows(unavailable).allSatisfy { candidateLabels($0).count == 3 },
                 "pending and unavailable translation messages must not acquire POS labels")
         let otherLanguage = CandidateView(rows: rows, pinyin: "pingguo", highlighted: 0, footer: "日语译文 · 第 1/1 页",
                                           translationLanguage: .japanese)
-        require(candidateRows(otherLanguage).allSatisfy { $0.subviews.count == 3 },
+        require(candidateRows(otherLanguage).allSatisfy { candidateLabels($0).count == 3 },
                 "English POS classification must not be applied to other target languages")
 
         var scenarios = [("english-parts-of-speech", view), ("parts-of-speech-unavailable", unavailable),
                          ("parts-of-speech-other-language", otherLanguage)]
         for width: CGFloat in [180, 120, 80, 32, 12, 1] {
             let narrow = CandidateView(rows: rows, pinyin: "pingguo", highlighted: 0, footer: "英语译文 · 第 1/1 页",
-                                       maximumSize: NSSize(width: width, height: 1600))
+                                       maximumSize: NSSize(width: width, height: 1600), annotations: annotations)
             require(narrow.preferredSize.width <= width, "POS annotations must not exceed the available width")
             require(selectedRow(narrow).accessibilityIndex() == 0, "narrow POS layout must retain the selected candidate")
             checkFrames(narrow)
             checkColumns(narrow)
             if width >= 120 {
                 for row in candidateRows(narrow) {
-                    checkWrappedTextFits(row.subviews[1] as! NSTextField)
-                    checkWrappedTextFits(row.subviews[2] as! NSTextField)
+                    checkWrappedTextFits(candidateLabels(row)[1])
+                    checkWrappedTextFits(candidateLabels(row)[2])
                 }
             }
             // Tiny widths exercise clamping, but do not produce useful review images.
@@ -295,6 +297,14 @@ struct PresentationChecks {
         return event
     }
 
+    @MainActor static func candidateLabels(_ row: NSView) -> [NSTextField] {
+        row.subviews.flatMap { view -> [NSTextField] in
+            if let label = view as? NSTextField { return [label] }
+            if let clip = view as? NSClipView { return clip.documentView?.subviews.compactMap { $0 as? NSTextField } ?? [] }
+            return []
+        }
+    }
+
     @MainActor private static func candidateRows(_ view: CandidateView) -> [NSView] {
         (view.accessibilityChildren() ?? []).compactMap { $0 as? NSView }.filter { $0.accessibilityRole() == .row }
     }
@@ -309,10 +319,10 @@ struct PresentationChecks {
         var chineseX: CGFloat?
         var translationX: CGFloat?
         let rows = candidateRows(view)
-        let partOfSpeechX = rows.first(where: { $0.subviews.count > 3 })?.subviews[3].frame.minX
+        let partOfSpeechX = rows.first(where: { candidateLabels($0).count > 3 }).map { candidateLabels($0)[3].frame.minX }
         for row in rows {
-            let chinese = row.subviews[1] as! NSTextField
-            let translation = row.subviews[2] as! NSTextField
+            let chinese = candidateLabels(row)[1]
+            let translation = candidateLabels(row)[2]
             let annotationX = partOfSpeechX ?? translation.frame.minX
             let annotationGap = annotationX - chinese.frame.maxX
             require(annotationGap >= -0.01 && annotationGap <= 40.01,
@@ -321,8 +331,8 @@ struct PresentationChecks {
                 require(abs(annotationGap - 40) < 0.01, "Chinese and annotation columns must have a fixed 40-point gap")
             }
             require(chinese.alignment == .left && translation.alignment == .left, "both columns must stay left-aligned")
-            if row.subviews.count > 3 {
-                let partOfSpeech = row.subviews[3] as! NSTextField
+            if candidateLabels(row).count > 3 {
+                let partOfSpeech = candidateLabels(row)[3]
                 require(partOfSpeech.alignment == .left && partOfSpeech.frame.minX == annotationX,
                         "POS labels must share a left-aligned column")
                 require(partOfSpeech.frame.maxX <= translation.frame.minX + 0.01,
@@ -352,6 +362,7 @@ struct PresentationChecks {
     @MainActor private static func checkFrames(_ view: NSView) {
         for child in view.subviews {
             let frame = child.frame
+            if view is NSClipView { checkFrames(child); continue }
             require(frame.minX >= -0.5 && frame.minY >= -0.5 && frame.maxX <= view.bounds.width + 0.5 && frame.maxY <= view.bounds.height + 0.5,
                     "child \(type(of: child)) exceeds parent: \(frame) / \(view.bounds)")
             checkFrames(child)

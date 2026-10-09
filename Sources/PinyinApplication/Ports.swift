@@ -58,5 +58,12 @@ public struct CandidatePresentation {
     func showLoading(pinyin: String)
     func showModeStatus(mode: InputMode)
     func showCaseStatus(uppercaseLocked: Bool)
+    /// Scrolls an overflowing selected row without changing candidate selection.
+    /// Returns false when the selected row fits, preserving normal page navigation.
+    func scrollHighlightedCandidate(by pages: Int) -> Bool
     func hide()
+}
+
+extension CandidatePresenting {
+    public func scrollHighlightedCandidate(by pages: Int) -> Bool { false }
 }

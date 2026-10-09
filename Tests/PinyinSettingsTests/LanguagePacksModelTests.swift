@@ -170,9 +170,11 @@ struct LanguagePacksModelTests {
         #expect(model.isBusy)
 
         refresh.cancel()
-        while model.isCheckingAll { await Task.yield() }
+        // Completion must not depend on the non-cooperative system read.
+        await refresh.value
         #expect(!model.isBusy)
         #expect(model.statuses.values.allSatisfy { $0 == .unknown })
+        #expect(reader.isPaused)
 
         reader.status = .installed
         await model.checkAllAvailability()
@@ -181,12 +183,93 @@ struct LanguagePacksModelTests {
 
         // The old system read may ignore cancellation and complete much later.
         reader.resumeRead(returning: .notInstalled)
-        await refresh.value
+        await reader.waitForPausedReadReturn()
         #expect(model.statuses == currentStatuses)
         #expect(model.isReady)
         #expect(model.checkedCount == TranslationLanguage.allCases.count)
         #expect(!model.isBusy)
         #expect(opener.urls.isEmpty)
+    }
+
+    @Test("A foreground refresh rereads languages checked before system settings changed")
+    func foregroundRefreshStartsAFreshScan() async {
+        let reader = StatusReader()
+        reader.pauseAtRead = 2
+        let model = LanguagePacksModel(statusReader: reader.read, settingsOpener: { _ in false })
+        let original = Task { await model.checkAllAvailability() }
+        await reader.waitForRead(after: 1)
+        #expect(model.statuses[.english] == .notInstalled)
+
+        // English was checked before the user installed its model in System Settings.
+        reader.status = .installed
+        await model.checkAllAvailability(restarting: true)
+        await original.value
+        #expect(reader.isPaused)
+        #expect(reader.readsByLanguage[.english] == 2)
+        #expect(model.statuses.values.allSatisfy { $0 == .installed })
+        #expect(model.checkedCount == TranslationLanguage.allCases.count)
+
+        reader.resumeRead(returning: .notInstalled)
+        await reader.waitForPausedReadReturn()
+        #expect(model.statuses.values.allSatisfy { $0 == .installed })
+        #expect(!model.isBusy)
+    }
+
+    @Test("Cancelling a shared scan releases every waiter before the system read returns")
+    func explicitCancellationReleasesSharedWaiters() async {
+        let reader = StatusReader()
+        reader.pauseNextRead = true
+        let model = LanguagePacksModel(statusReader: reader.read, settingsOpener: { _ in false })
+        let first = Task { await model.checkAllAvailability() }
+        await reader.waitForRead(after: 0)
+        var secondStarted = false
+        let second = Task {
+            secondStarted = true
+            await model.checkAllAvailability()
+        }
+        while !secondStarted { await Task.yield() }
+
+        model.cancelAvailabilityCheck()
+        await first.value
+        await second.value
+        #expect(reader.readCount == 1)
+        #expect(reader.isPaused)
+        #expect(!model.isBusy)
+        #expect(model.scanError == nil)
+
+        reader.resumeRead()
+        await reader.waitForPausedReadReturn()
+        #expect(model.checkedCount == 0)
+        #expect(model.statuses.values.allSatisfy { $0 == .unknown })
+    }
+
+    @Test("A timeout releases a non-cooperative read, invalidates unread states, and permits retry")
+    func timedOutScanCanRetryWithoutWaitingForOldReader() async {
+        let reader = StatusReader()
+        reader.status = .installed
+        let model = LanguagePacksModel(statusReader: reader.read, settingsOpener: { _ in false },
+                                      scanTimeout: .milliseconds(150))
+        await model.checkAllAvailability()
+        #expect(model.isReady)
+        reader.pauseNextRead = true
+
+        await model.checkAllAvailability()
+        #expect(reader.isPaused)
+        #expect(!model.isBusy)
+        #expect(model.scanError?.contains("超时") == true)
+        #expect(model.statuses.values.allSatisfy { $0 == .unknown })
+        #expect(!model.canRequestRemoval)
+
+        await model.checkAllAvailability()
+        #expect(model.scanError == nil)
+        #expect(model.isReady)
+        #expect(model.checkedCount == TranslationLanguage.allCases.count)
+
+        reader.resumeRead(returning: .notInstalled)
+        await reader.waitForPausedReadReturn()
+        #expect(model.statuses.values.allSatisfy { $0 == .installed })
+        #expect(model.checkedCount == TranslationLanguage.allCases.count)
+        #expect(model.scanError == nil)
     }
 }
 
@@ -206,18 +289,25 @@ private final class PreparationSettingsOpener {
 private final class StatusReader {
     var status: LanguagePacksModel.PackStatus = .notInstalled
     var pauseNextRead = false
+    var pauseAtRead: Int?
     private(set) var readCount = 0
+    private(set) var readsByLanguage: [TranslationLanguage: Int] = [:]
+    private var pausedReadReturned = false
     private var readWaiter: CheckedContinuation<Void, Never>?
     private var pausedRead: CheckedContinuation<LanguagePacksModel.PackStatus, Never>?
+    var isPaused: Bool { pausedRead != nil }
 
     func read(_ language: TranslationLanguage) async -> LanguagePacksModel.PackStatus {
         readCount += 1
-        if pauseNextRead {
+        readsByLanguage[language, default: 0] += 1
+        if pauseNextRead || pauseAtRead == readCount {
             pauseNextRead = false
-            return await withCheckedContinuation { continuation in
+            let result = await withCheckedContinuation { continuation in
                 pausedRead = continuation
                 announceRead()
             }
+            pausedReadReturned = true
+            return result
         }
         announceRead()
         return status
@@ -232,6 +322,10 @@ private final class StatusReader {
         let continuation = pausedRead
         pausedRead = nil
         continuation?.resume(returning: result ?? status)
+    }
+
+    func waitForPausedReadReturn() async {
+        while !pausedReadReturned { await Task.yield() }
     }
 
     private func announceRead() {

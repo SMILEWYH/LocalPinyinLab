@@ -16,12 +16,12 @@ extension CandidateRow {
         }
     }
 
-    @MainActor func accessibilityText(index: Int, language: TranslationLanguage) -> String {
+    func accessibilityText(index: Int, language: TranslationLanguage, annotation: TranslationPartOfSpeech? = nil) -> String {
         let candidate = "第 \(index + 1) 项，\(text)"
         switch translation {
         case .notRequired: return candidate
         case .ready:
-            let partOfSpeech = translationPartOfSpeech(for: language)
+            let partOfSpeech = annotation
                 .map { "，词性：\($0.localizedName)（\($0.abbreviation)）" } ?? ""
             return candidate + partOfSpeech + "，\(language.displayName)译文：" + translationText(for: language)
         default: return candidate + "，" + translationText(for: language)

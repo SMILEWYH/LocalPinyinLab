@@ -85,7 +85,7 @@ struct SettingsRootView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             languagePacks.refreshFromPreferences()
             speechShortcut.refreshFromPreferences()
-            Task { await languagePacks.checkAllAvailability() }
+            Task { await languagePacks.checkAllAvailability(restarting: true) }
         }
         .onReceive(DistributedNotificationCenter.default().publisher(
             for: SpeechShortcutPreferences.didChangeNotification, object: SpeechShortcutPreferences.notificationObject as NSString)) { _ in

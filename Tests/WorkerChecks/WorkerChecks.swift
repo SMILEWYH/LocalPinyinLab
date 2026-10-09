@@ -77,15 +77,20 @@ private struct WorkerFixture {
         let cases: [(String, @MainActor () async throws -> Void)] = [
             ("Cancelled query releases the queue and discards the old worker", cancelledQuery),
             ("Cancelled startup stops the handshake without retrying", cancelledHandshake),
+            ("Repeated warmups are coalesced and user queries preempt a stalled warmup", preemptWarmup),
+            ("A cancelled query does not wait for a stalled warmup timeout", cancelledWarmupQuery),
+            ("Rapid warmup and shutdown cycles finish and reap every worker", rapidShutdown),
             ("Worker exit retries once and restores a persistent connection", retryAfterExit),
             ("Response timeout still retries and recovers", retryAfterTimeout),
             ("Persistent failure stops after two attempts", retryLimit),
-            ("Committed selections reorder the next query and survive a new session", learnedOrderSurvivesRestart)
+            ("Committed selections reorder the next query and survive a new session", learnedOrderSurvivesRestart),
+            ("Suspended persistence never blocks candidate queries and shutdown flushes learning", deferredLearning)
         ] + CandidateUsageChecks.cases.map { name, run in (name, { try run() }) }
         var failures = 0
         for (name, run) in cases {
             do { try await run(); print("PASS: \(name)") }
             catch { failures += 1; print("FAIL: \(name) — \(error)") }
+            fflush(nil)
         }
         print("\(cases.count - failures)/\(cases.count) worker checks passed")
         if failures > 0 { exit(1) }
@@ -177,6 +182,108 @@ private struct WorkerFixture {
         }
     }
 
+    @MainActor private static func preemptWarmup() async throws {
+        let fixture = try WorkerFixture(behavior: "slow-warm-first")
+        defer { fixture.remove() }
+        let session = PinyinSession(workerRoot: fixture.root)
+        do {
+            for _ in 0..<20 { session.warm() }
+            try await fixture.waitForStart()
+            let start = ContinuousClock.now
+            let result = try await session.candidates(for: "ni")
+            let elapsed = start.duration(to: .now)
+            try require(result.map(\.text) == ["你"], "A user query did not recover from the stalled warmup")
+            try require(elapsed < .seconds(1.5), "User query waited for speculative warmup: \(elapsed)")
+            try require(fixture.lines("pids").count == 2, "Repeated warmups launched extra workers")
+            try require(fixture.lines("requests") == ["ni"], "Speculative warmup repeated a user query")
+            await session.shutdown()
+            try fixture.verifyStopped()
+        } catch {
+            await session.shutdown()
+            throw error
+        }
+    }
+
+    @MainActor private static func cancelledWarmupQuery() async throws {
+        let fixture = try WorkerFixture(behavior: "slow-handshake")
+        defer { fixture.remove() }
+        let session = PinyinSession(workerRoot: fixture.root)
+        session.warm()
+        var stale: Task<[Candidate], any Error>?
+        do {
+            try await fixture.waitForStart()
+            let query = Task { try await session.candidates(for: "n") }
+            stale = query
+            try await Task.sleep(for: .milliseconds(10))
+            let start = ContinuousClock.now
+            query.cancel()
+            try await expectCancellation(query)
+            try require(start.duration(to: .now) < .seconds(1.5), "Cancellation waited behind the warmup handshake")
+            await session.shutdown()
+            try fixture.verifyStopped()
+        } catch {
+            stale?.cancel()
+            if let stale { _ = try? await stale.value }
+            await session.shutdown()
+            throw error
+        }
+    }
+
+    @MainActor private static func deferredLearning() async throws {
+        let fixture = try WorkerFixture(behavior: "ranking")
+        defer { fixture.remove() }
+        let file = fixture.root.appendingPathComponent("history/usage.json")
+        let persistence = DispatchQueue(label: "localpinyin-check.blocked-persistence")
+        persistence.suspend()
+        var suspended = true
+        let session = PinyinSession(workerRoot: fixture.root, usageFileURL: file, persistenceQueue: persistence)
+        do {
+            let original = try await session.candidates(for: "ni")
+            var composition = CompositionState()
+            _ = composition.append("ni")
+            _ = composition.choose(original[1])
+            for _ in 0..<20 { session.recordCommittedSegments(composition.segments) }
+            let start = ContinuousClock.now
+            let learned = try await session.candidates(for: "ni")
+            try require(learned.map(\.text) == ["尼", "你"], "Pending persistence prevented immediate ranking")
+            try require(start.duration(to: .now) < .seconds(1.5), "Candidate lookup was blocked by persistence")
+            try require(!FileManager.default.fileExists(atPath: file.path), "Learning bypassed its persistence queue")
+            persistence.resume()
+            suspended = false
+            try await session.flushLearning()
+            await session.shutdown()
+            let document = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any]
+            let entries = document?["entries"] as? [[String: Any]]
+            try require(entries?.first?["count"] as? Int == 20, "Flush lost committed learning snapshots")
+            try fixture.verifyStopped()
+        } catch {
+            if suspended { persistence.resume() }
+            await session.shutdown()
+            throw error
+        }
+    }
+
+    @MainActor private static func rapidShutdown() async throws {
+        let fixture = try WorkerFixture(behavior: "healthy")
+        defer { fixture.remove() }
+        let session = PinyinSession(workerRoot: fixture.root)
+        do {
+            for _ in 0..<12 {
+                session.warm()
+                try await Task.sleep(for: .milliseconds(5))
+                let result = try await session.candidates(for: "ni")
+                try require(result.map(\.text) == ["你"], "A query after rapid shutdown failed to restart")
+                let start = ContinuousClock.now
+                await session.shutdown()
+                try require(start.duration(to: .now) < .seconds(1.5), "Worker shutdown exceeded its bounded cleanup")
+                try fixture.verifyStopped()
+            }
+        } catch {
+            await session.shutdown()
+            throw error
+        }
+    }
+
     @MainActor private static func expectCancellation(_ task: Task<[Candidate], any Error>) async throws {
         do {
             _ = try await task.value
@@ -248,7 +355,7 @@ private struct WorkerFixture {
         let previousStarts = ((try? String(contentsOf: root.appendingPathComponent("pids"), encoding: .utf8)) ?? "")
             .split(separator: "\n").count
         try append(String(getpid()), to: "pids")
-        if behavior == "slow-handshake" { stall() }
+        if behavior == "slow-handshake" || (behavior == "slow-warm-first" && previousStarts == 0) { stall() }
         try emit("{\"ready\":true}\n")
         var buffer = Data()
         while true {

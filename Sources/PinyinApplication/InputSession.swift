@@ -25,7 +25,17 @@ import PinyinCore
     private let presenter: any CandidatePresenting
     private var host: (any InputHost)?
     private var hostRevision: UInt64 = 0
+    private var compositionRevision: UInt64 = 0
+    private struct CallbackRevision: Equatable {
+        let host: UInt64
+        let composition: UInt64
+        let mode: UInt64
+    }
+    private var callbackRevision: CallbackRevision {
+        CallbackRevision(host: hostRevision, composition: compositionRevision, mode: modeState.revision)
+    }
     private var documentContext = ""
+    private var contextReadID: UUID?
     private var queryID: UUID?
     private var translationID: UUID?
     private var queryTask: Task<Void, Never>?
@@ -216,6 +226,10 @@ import PinyinCore
             // Navigation supersedes a selection queued while candidates load.
             queuedSelection = nil
             stopSpeech()
+            if queryState == .ready, key.modifiers == [.shift],
+               presenter.scrollHighlightedCandidate(by: key.code == 121 ? 1 : -1) {
+                return true
+            }
             candidates.movePage(by: key.code == 121 || key.code == 124 ? 1 : -1)
             show()
             translateVisiblePage()
@@ -244,7 +258,24 @@ import PinyinCore
         if !text.isEmpty && text.unicodeScalars.allSatisfy({ (97...122).contains($0.value) || $0.value == 39 }) {
             let beginning = composition.isEmpty
             guard composition.append(text) else { return true }
-            if beginning { documentContext = PinyinRules.boundedContext(nextHost.precedingContext()) }
+            if beginning {
+                let revision = callbackRevision
+                let contextTicket = UUID()
+                contextReadID = contextTicket
+                let context = PinyinRules.boundedContext(nextHost.precedingContext())
+                // A new host/composition owns its own read. Edits of this same
+                // composition wait for this read instead of querying with empty context.
+                guard contextReadID == contextTicket else { return true }
+                contextReadID = nil
+                guard hostRevision == revision.host, modeState.revision == revision.mode else { return true }
+                documentContext = context
+                if compositionRevision != revision.composition {
+                    startQuery()
+                    return true
+                }
+                refresh(preservingSelection: queuedSelection)
+                return true
+            }
             refresh()
             return true
         }
@@ -283,7 +314,7 @@ import PinyinCore
     }
 
     private func select(offset: Int) {
-        if queryState == .querying { queuedSelection = offset; return }
+        if queryState == .querying || contextReadID != nil { queuedSelection = offset; return }
         guard queryState == .ready else { return }
         guard let index = candidates.indexOnPage(offset) else {
             return
@@ -292,14 +323,23 @@ import PinyinCore
         if composition.pending.isEmpty { commit() } else { refresh() }
     }
 
-    private func refresh() {
+    private func refresh(preservingSelection selection: Int? = nil) {
         invalidateRequests()
+        queuedSelection = selection
         stopSpeech()
         candidates.clear()
         queryState = composition.isEmpty ? .idle : composition.pending.isEmpty ? .selectedTextOnly : .querying
+        let revision = callbackRevision
         host?.setMarkedText(composition.markedText)
+        guard callbackRevision == revision else { return }
         guard queryState == .querying else { show(); return }
         presenter.showLoading(pinyin: composition.markedText)
+        guard callbackRevision == revision else { return }
+        startQuery()
+    }
+
+    private func startQuery() {
+        guard queryState == .querying, contextReadID == nil, queryID == nil else { return }
         let query = composition.pending
         let context = PinyinRules.boundedContext(documentContext + composition.selectedText)
         let ticket = UUID()
@@ -427,6 +467,7 @@ import PinyinCore
     }
 
     private func invalidateRequests() {
+        compositionRevision &+= 1
         queryID = nil
         queryState = .idle
         queryTask?.cancel(); queryTask = nil
@@ -443,6 +484,7 @@ import PinyinCore
 
     private func clear() {
         invalidateRequests()
+        contextReadID = nil
         stopSpeech()
         composition = CompositionState()
         documentContext = ""

@@ -44,6 +44,24 @@ struct LocalPinyinApp {
         NSLog("LocalPinyin lifecycle: IMKServer created; bundle=%@", Bundle.main.bundlePath)
         PinyinSession.shared.warm()
         let app = NSApplication.shared
-        app.run()
+        let delegate = InputServiceDelegate()
+        app.delegate = delegate
+        withExtendedLifetime(delegate) { app.run() }
+    }
+}
+
+@MainActor
+private final class InputServiceDelegate: NSObject, NSApplicationDelegate {
+    private var terminationTask: Task<Void, Never>?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if terminationTask == nil {
+            terminationTask = Task {
+                do { try await PinyinSession.shared.flushLearning() }
+                catch { NSLog("LocalPinyin: candidate history could not be flushed before exit") }
+                sender.reply(toApplicationShouldTerminate: true)
+            }
+        }
+        return .terminateLater
     }
 }

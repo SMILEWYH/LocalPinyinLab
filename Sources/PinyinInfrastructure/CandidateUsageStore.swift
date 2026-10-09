@@ -4,6 +4,7 @@ import PinyinCore
 
 /// Queue-owned local learning. Only committed spelling/text pairs are retained;
 /// document context and incomplete compositions never enter this store.
+/// The owner flushes at shutdown; releasing a standalone store is not a flush.
 package final class CandidateUsageStore {
     package static var defaultFileURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -11,12 +12,12 @@ package final class CandidateUsageStore {
             .appendingPathComponent("candidate-usage.json")
     }
 
-    private struct Key: Hashable {
+    private struct Key: Hashable, Sendable {
         let pinyin: String
         let text: String
     }
 
-    private struct Entry: Codable {
+    private struct Entry: Codable, Sendable {
         let pinyin: String
         let text: String
         var count: UInt64
@@ -34,13 +35,19 @@ package final class CandidateUsageStore {
     private static let maximumFileBytes = 8 * 1_024 * 1_024
     private static let maximumCount: UInt64 = 1_000_000
     private let fileURL: URL
+    private let persistence: Persistence
     private var entries: [Key: Entry] = [:]
     private var recency: UInt64 = 0
     private var loaded = false
     private var preserveExistingFile = false
+    private var needsScheduling = false
 
     /// Deliberately does no filesystem work: construction may happen on the UI actor.
-    package init(fileURL: URL) { self.fileURL = fileURL }
+    package init(fileURL: URL, persistenceQueue: DispatchQueue? = nil,
+                 beforePersistence: (@Sendable () throws -> Void)? = nil) {
+        self.fileURL = fileURL
+        persistence = Persistence(fileURL: fileURL, queue: persistenceQueue, beforePersistence: beforePersistence)
+    }
 
     package func record(_ segments: [CompositionState.Segment]) throws {
         var readFailure: (any Error)?
@@ -59,17 +66,37 @@ package final class CandidateUsageStore {
         }
         guard changed else { return }
         trimEntries()
+        needsScheduling = true
         // Memory remains updated if saving fails; callers may log the failure without
         // interrupting the committed text or losing learning for this process.
         // A failed read is not proof of corrupt data. Retain in-memory deltas and
         // retry loading before any write could replace the unreadable old history.
         if let readFailure { throw readFailure }
-        try save()
+        scheduleIfNeeded()
+    }
+
+    /// Call on the store's owning queue. Used at explicit durability boundaries,
+    /// never for ordinary candidate queries or commits.
+    package func flush() throws {
+        if needsScheduling {
+            try loadIfNeeded()
+            scheduleIfNeeded()
+        }
+        try persistence.flush()
+    }
+
+    private func scheduleIfNeeded() {
+        guard loaded, needsScheduling else { return }
+        // Dictionary value semantics give the writer an immutable snapshot;
+        // sorting, encoding and filesystem work all happen on its own queue.
+        persistence.submit(entries, preserveExistingFile: preserveExistingFile)
+        needsScheduling = false
     }
 
     package func ranked(_ candidates: [Candidate], for pinyin: String) -> [Candidate] {
         guard PinyinRules.isValid(pinyin) else { return candidates }
         try? loadIfNeeded()
+        scheduleIfNeeded()
         guard !entries.isEmpty else { return candidates }
         var result = candidates
         let groups = Dictionary(grouping: candidates.indices) { candidates[$0].consumedCount }
@@ -187,36 +214,146 @@ package final class CandidateUsageStore {
         recency += 1
     }
 
-    private func save() throws {
-        let manager = FileManager.default
-        let directory = fileURL.deletingLastPathComponent()
-        try manager.createDirectory(at: directory, withIntermediateDirectories: true,
-                                    attributes: [.posixPermissions: 0o700])
-        guard try manager.attributesOfItem(atPath: directory.path)[.type] as? FileAttributeType == .typeDirectory else {
-            throw StoreError.invalidFileType
+    /// A locked mailbox retains only the latest waiting snapshot, even while a
+    /// slow write occupies the serial queue. All filesystem state is queue-owned.
+    private final class Persistence: @unchecked Sendable {
+        private struct Snapshot: Sendable {
+            let id = UUID()
+            let entries: [Key: Entry]
+            let preserveExistingFile: Bool
         }
-        try manager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
-        if manager.fileExists(atPath: fileURL.path) {
-            guard try manager.attributesOfItem(atPath: fileURL.path)[.type] as? FileAttributeType == .typeRegular else {
-                throw StoreError.invalidFileType
+        private let fileURL: URL
+        private let queue: DispatchQueue
+        // Deterministic fault/ordering checks can pause an in-flight write here.
+        private let beforePersistence: (@Sendable () throws -> Void)?
+        private let lock = NSLock()
+        private var pending: Snapshot?
+        private var drainEnqueued = false
+        private var preserveExistingFile: Bool?
+        private var scheduled: DispatchWorkItem?
+        private var failures = 0
+        private var lastAttemptID: UUID?
+
+        init(fileURL: URL, queue: DispatchQueue?, beforePersistence: (@Sendable () throws -> Void)?) {
+            self.fileURL = fileURL
+            self.queue = queue ?? DispatchQueue(label: "local.pinyinlab.learning", qos: .utility)
+            self.beforePersistence = beforePersistence
+        }
+
+        func submit(_ entries: [Key: Entry], preserveExistingFile: Bool) {
+            lock.lock()
+            pending = Snapshot(entries: entries, preserveExistingFile: preserveExistingFile)
+            let enqueue = !drainEnqueued
+            drainEnqueued = true
+            lock.unlock()
+            guard enqueue else { return }
+            queue.async { [self] in
+                if scheduled == nil { schedule(after: .milliseconds(100)) }
             }
         }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let data = try encoder.encode(Document(version: 1, entries: entries.values.sorted { $0.recency < $1.recency }))
-        guard data.count <= Self.maximumFileBytes else { throw StoreError.oversizedDocument }
-        let temporary = directory.appendingPathComponent(".candidate-usage-" + UUID().uuidString + ".tmp")
-        defer { try? manager.removeItem(at: temporary) }
-        try data.write(to: temporary, options: .withoutOverwriting)
-        try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
-        if preserveExistingFile, manager.fileExists(atPath: fileURL.path) {
-            let backup = directory.appendingPathComponent(fileURL.lastPathComponent + ".corrupt-" + UUID().uuidString)
-            try manager.moveItem(at: fileURL, to: backup)
-            try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
+
+        func flush() throws {
+            try queue.sync {
+                scheduled?.cancel()
+                scheduled = nil
+                do { try savePending() }
+                catch { retryAfterFailure(); throw error }
+            }
         }
-        guard rename(temporary.path, fileURL.path) == 0 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+
+        private func schedule(after delay: DispatchTimeInterval) {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.scheduled = nil
+                do { try self.savePending() }
+                catch {
+                    if self.failures == 0 {
+                        NSLog("LocalPinyin: candidate history could not be saved; retaining pending learning")
+                    }
+                    self.retryAfterFailure()
+                }
+            }
+            scheduled = work
+            queue.asyncAfter(deadline: .now() + delay, execute: work)
         }
-        preserveExistingFile = false
+
+        private func retryAfterFailure() {
+            lock.lock()
+            let superseded = pending?.id != lastAttemptID
+            if superseded { failures = 0 }
+            failures += 1
+            // Bound background retries. The next commit or explicit flush still
+            // retries the retained snapshot after the filesystem recovers.
+            if failures > 3 { drainEnqueued = false }
+            lock.unlock()
+            if failures <= 3 {
+                schedule(after: superseded ? .milliseconds(100) : .seconds(1 << (failures - 1)))
+            }
+        }
+
+        private func savePending() throws {
+            lock.lock()
+            let snapshot = pending
+            pending = nil
+            if snapshot == nil { drainEnqueued = false }
+            lock.unlock()
+            guard let snapshot else { return }
+            if lastAttemptID != snapshot.id { failures = 0 }
+            lastAttemptID = snapshot.id
+            // Only the initial file needs preservation. Later snapshots must
+            // never classify a successfully saved replacement as corrupt.
+            if preserveExistingFile == nil { preserveExistingFile = snapshot.preserveExistingFile }
+            do {
+                try beforePersistence?()
+                try save(snapshot.entries)
+            }
+            catch {
+                lock.lock()
+                // A commit made during this write takes precedence over its
+                // failed predecessor. Never restore an obsolete snapshot over it.
+                if pending == nil { pending = snapshot }
+                lock.unlock()
+                throw error
+            }
+            failures = 0
+            lock.lock()
+            let hasNewer = pending != nil
+            if !hasNewer { drainEnqueued = false }
+            lock.unlock()
+            if hasNewer { schedule(after: .milliseconds(100)) }
+        }
+
+        private func save(_ entries: [Key: Entry]) throws {
+            let manager = FileManager.default
+            let directory = fileURL.deletingLastPathComponent()
+            try manager.createDirectory(at: directory, withIntermediateDirectories: true,
+                                        attributes: [.posixPermissions: 0o700])
+            guard try manager.attributesOfItem(atPath: directory.path)[.type] as? FileAttributeType == .typeDirectory else {
+                throw StoreError.invalidFileType
+            }
+            try manager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            if manager.fileExists(atPath: fileURL.path) {
+                guard try manager.attributesOfItem(atPath: fileURL.path)[.type] as? FileAttributeType == .typeRegular else {
+                    throw StoreError.invalidFileType
+                }
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            let data = try encoder.encode(Document(version: 1, entries: entries.values.sorted { $0.recency < $1.recency }))
+            guard data.count <= CandidateUsageStore.maximumFileBytes else { throw StoreError.oversizedDocument }
+            let temporary = directory.appendingPathComponent(".candidate-usage-" + UUID().uuidString + ".tmp")
+            defer { try? manager.removeItem(at: temporary) }
+            try data.write(to: temporary, options: .withoutOverwriting)
+            try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
+            if preserveExistingFile == true, manager.fileExists(atPath: fileURL.path) {
+                let backup = directory.appendingPathComponent(fileURL.lastPathComponent + ".corrupt-" + UUID().uuidString)
+                try manager.moveItem(at: fileURL, to: backup)
+                try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
+            }
+            guard rename(temporary.path, fileURL.path) == 0 else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
+            preserveExistingFile = false
+        }
     }
 }

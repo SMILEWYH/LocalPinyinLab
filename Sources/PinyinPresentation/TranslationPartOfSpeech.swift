@@ -2,7 +2,7 @@ import Foundation
 import NaturalLanguage
 import PinyinCore
 
-package enum TranslationPartOfSpeech: String {
+package enum TranslationPartOfSpeech: String, Sendable {
     case noun = "n."
     case verb = "v."
     case adjective = "adj."
@@ -47,26 +47,31 @@ package enum TranslationPartOfSpeech: String {
     }
 }
 
-extension CandidateRow {
-    @MainActor package func translationPartOfSpeech(for language: TranslationLanguage) -> TranslationPartOfSpeech? {
-        guard language == .english, needsTranslation, case .ready(let text) = translation else { return nil }
-        return EnglishPartOfSpeech.shared.annotation(for: text)
-    }
+package protocol TranslationPartOfSpeechProviding: Sendable {
+    func annotations(for rows: [CandidateRow], language: TranslationLanguage) async -> [TranslationPartOfSpeech?]
 }
 
 /// Optional display metadata, never part of committed or spoken text. The
 /// system model infers one lexical class; it does not enumerate dictionary senses.
-@MainActor
-private final class EnglishPartOfSpeech {
-    static let shared = EnglishPartOfSpeech()
-    private let tagger = NLTagger(tagSchemes: [.lexicalClass])
-    private let available = NLTagger.availableTagSchemes(for: .word, language: .english).contains(.lexicalClass)
+package actor EnglishPartOfSpeech: TranslationPartOfSpeechProviding {
+    package static let shared = EnglishPartOfSpeech()
+    // Lazy initialization runs on this actor, including the system model's first load.
+    private lazy var tagger = NLTagger(tagSchemes: [.lexicalClass])
+    private lazy var available = NLTagger.availableTagSchemes(for: .word, language: .english).contains(.lexicalClass)
     private struct Entry { let annotation: TranslationPartOfSpeech? }
     private var cache: [String: Entry] = [:]
     private var insertionOrder: [String] = []
 
-    func annotation(for text: String) -> TranslationPartOfSpeech? {
-        // Bound work on the input thread. Phrases, sentences, mixed scripts and
+    package func annotations(for rows: [CandidateRow], language: TranslationLanguage) -> [TranslationPartOfSpeech?] {
+        rows.map { row in
+            guard !Task.isCancelled, language == .english, row.needsTranslation,
+                  case .ready(let text) = row.translation else { return nil }
+            return annotation(for: text)
+        }
+    }
+
+    private func annotation(for text: String) -> TranslationPartOfSpeech? {
+        // Bound work and cache entries. Phrases, sentences, mixed scripts and
         // compounds have no single reliable word class and keep their raw text.
         guard available, text.utf8.prefix(81).count <= 80 else { return nil }
         let word = text.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters)).lowercased()

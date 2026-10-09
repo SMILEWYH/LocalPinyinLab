@@ -8,11 +8,11 @@ struct LanguagePacksView: View {
     var body: some View {
         SettingsPageContent(title: "语言包", subtitle: "选择候选译文和朗读使用的目标语言。", identifier: "settings-page-language-packs") {
             SettingsCard(title: "目标语言", symbol: "globe", headerAction: {
-                Button(model.isCheckingAll ? "正在检查全部…" : "检查全部语言包") {
-                    Task { await model.checkAllAvailability() }
+                Button(model.isCheckingAll ? "取消检查" : "检查全部语言包") {
+                    if model.isCheckingAll { model.cancelAvailabilityCheck() }
+                    else { Task { await model.checkAllAvailability() } }
                 }
-                .disabled(model.isCheckingAll)
-                .accessibilityIdentifier("language-packs-refresh")
+                .accessibilityIdentifier(model.isCheckingAll ? "language-packs-cancel" : "language-packs-refresh")
             }) {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 7) {
                     ForEach(TranslationLanguage.allCases, id: \.rawValue) { language in
@@ -22,6 +22,10 @@ struct LanguagePacksView: View {
                 if let error = model.selectionError {
                     Text(error).font(.callout).foregroundStyle(.orange)
                         .accessibilityIdentifier("translation-language-selection-error")
+                }
+                if let error = model.scanError {
+                    Text(error).font(.callout).foregroundStyle(.orange)
+                        .accessibilityIdentifier("language-packs-scan-error")
                 }
             }
             SettingsCard(title: "中文 → \(model.targetLanguage.displayName)", symbol: "character.bubble", headerAction: {

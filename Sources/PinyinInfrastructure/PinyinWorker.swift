@@ -22,10 +22,13 @@ public final class PinyinWorker {
         try start(checkCancellation: {})
     }
 
-    private func start(checkCancellation: () throws -> Void) throws {
+    func start(checkCancellation: () throws -> Void) throws {
         try checkCancellation()
-        if process?.isRunning == true { return }
+        if process?.isRunning == true, input != nil, output != nil { return }
         stop()
+        // A child that has not finished exiting must remain tracked. Do not
+        // launch another worker over an outstanding cleanup attempt.
+        guard process == nil else { throw PinyinWorkerError.unavailable }
         let child = Process()
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
@@ -96,14 +99,28 @@ public final class PinyinWorker {
         buffer.removeAll(keepingCapacity: false)
         if let process, process.isRunning {
             process.terminate()
-            let deadline = DispatchTime.now().uptimeNanoseconds + 100_000_000
-            while process.isRunning && DispatchTime.now().uptimeNanoseconds < deadline {
-                usleep(2_000)
+            if !waitForExit(process, nanoseconds: 100_000_000) {
+                _ = Darwin.kill(process.processIdentifier, SIGKILL)
+                guard waitForExit(process, nanoseconds: 500_000_000) else {
+                    NSLog("LocalPinyin: worker cleanup is still pending")
+                    return
+                }
             }
-            if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
-            process.waitUntilExit()
         }
         process = nil
+    }
+
+    private func waitForExit(_ child: Process, nanoseconds: UInt64) -> Bool {
+        let deadline = DispatchTime.now().uptimeNanoseconds + nanoseconds
+        while child.isRunning {
+            // Foundation owns reaping; never compete with it through waitpid.
+            // waitUntilExit can remain in a run loop after the child disappears,
+            // so observe its status with a bound and also accept kernel ESRCH.
+            if Darwin.kill(child.processIdentifier, 0) == -1, errno == ESRCH { return true }
+            guard DispatchTime.now().uptimeNanoseconds < deadline else { return false }
+            usleep(2_000)
+        }
+        return true
     }
 
     private func readLine(checkCancellation: () throws -> Void) throws -> Data {

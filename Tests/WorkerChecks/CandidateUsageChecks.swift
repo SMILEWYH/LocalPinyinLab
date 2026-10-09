@@ -21,6 +21,34 @@ private struct UsageFixture {
     func remove() { try? FileManager.default.removeItem(at: root) }
 }
 
+private final class UsageWriteGate: @unchecked Sendable {
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var attempts = 0
+    private let failFirst: Bool
+
+    init(failFirst: Bool) { self.failFirst = failFirst }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return attempts
+    }
+
+    func beforeWrite() throws {
+        lock.lock()
+        attempts += 1
+        let first = attempts == 1
+        lock.unlock()
+        if first {
+            entered.signal()
+            release.wait()
+            if failFirst { throw UsageCheckFailure(description: "Injected first write failure") }
+        }
+    }
+}
+
 enum CandidateUsageChecks {
     static var cases: [(String, @Sendable () throws -> Void)] {
         [
@@ -32,6 +60,10 @@ enum CandidateUsageChecks {
             ("Broken learning files fall back and retain their original bytes", brokenFiles),
             ("Temporary read failures preserve and merge existing learning", retryReadFailure),
             ("Learning remains usable when a save fails", failedSave),
+            ("Pending learning snapshots keep memory current and flush the latest state", deferredSnapshots),
+            ("Commits during an in-flight write survive both success and failure", inFlightSnapshots),
+            ("A failed asynchronous write can flush after recovery without another commit", retryFlush),
+            ("A failed snapshot retries in the background without another commit", automaticRetry),
             ("Learning bounds loaded records and handles sequence overflow", storageBounds)
         ]
     }
@@ -45,6 +77,7 @@ enum CandidateUsageChecks {
 
     private static func record(_ text: String, _ pinyin: String, in store: CandidateUsageStore) throws {
         try store.record(segments(text, pinyin))
+        try store.flush()
     }
 
     private static func candidates(_ texts: [String], length: Int) -> [Candidate] {
@@ -167,6 +200,14 @@ enum CandidateUsageChecks {
             let backup = files.filter { $0.lastPathComponent.contains(".corrupt-") }
             try requireUsage(backup.count == 1, "Corrupt learning file was not retained before recovery")
             try requireUsage(try Data(contentsOf: backup[0]) == payload, "Corrupt backup bytes were changed")
+            try store.record(segments("你", "ni"))
+            try store.record(segments("你", "ni"))
+            try store.flush()
+            try store.flush()
+            let afterFlush = try FileManager.default.contentsOfDirectory(at: fixture.file.deletingLastPathComponent(), includingPropertiesForKeys: nil)
+            try requireUsage(afterFlush.filter { $0.lastPathComponent.contains(".corrupt-") }.count == 1,
+                             "Later snapshots or repeated flushes backed up a healthy replacement")
+            try requireUsage(try Data(contentsOf: backup[0]) == payload, "Later snapshots changed the corrupt backup")
             let restarted = CandidateUsageStore(fileURL: fixture.file)
             try requireUsage(restarted.ranked(original, for: "ni").first?.text == "你", "Learning did not recover after corruption")
         }
@@ -223,6 +264,108 @@ enum CandidateUsageChecks {
         try requireUsage(restarted.ranked(original, for: "ni").map(\.text) == ["你", "妮", "泥", "尼"], "Merged counts or recency were not persisted")
         let files = try FileManager.default.contentsOfDirectory(at: fixture.file.deletingLastPathComponent(), includingPropertiesForKeys: nil)
         try requireUsage(!files.contains { $0.lastPathComponent.contains(".corrupt-") }, "An I/O failure incorrectly classified valid history as corrupt")
+    }
+
+    private static func deferredSnapshots() throws {
+        let fixture = UsageFixture()
+        defer { fixture.remove() }
+        let queue = DispatchQueue(label: "localpinyin-check.deferred-save")
+        queue.suspend()
+        let store = CandidateUsageStore(fileURL: fixture.file, persistenceQueue: queue)
+        do {
+            for _ in 0..<20 { try store.record(segments("泥", "ni")) }
+            try store.record(segments("尼", "ni"))
+            try requireUsage(store.ranked(candidates(["你", "尼", "泥"], length: 2), for: "ni").first?.text == "泥",
+                             "Pending writes blocked immediate in-memory ranking")
+            try requireUsage(!FileManager.default.fileExists(atPath: fixture.file.path), "Recording performed a write outside the persistence queue")
+        } catch {
+            queue.resume()
+            try? store.flush()
+            throw error
+        }
+        queue.resume()
+        try store.flush()
+        let document = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture.file)) as? [String: Any]
+        let entries = document?["entries"] as? [[String: Any]] ?? []
+        try requireUsage(entries.count == 2 && entries.first { $0["text"] as? String == "泥" }?["count"] as? Int == 20,
+                         "An older pending snapshot overwrote the latest learning")
+        let restart = CandidateUsageStore(fileURL: fixture.file)
+        try requireUsage(restart.ranked(candidates(["你", "尼", "泥"], length: 2), for: "ni").first?.text == "泥",
+                         "Explicit flush did not make the latest ranking durable")
+    }
+
+    private static func retryFlush() throws {
+        let fixture = UsageFixture()
+        defer { fixture.remove() }
+        let store = CandidateUsageStore(fileURL: fixture.file)
+        // Establish an empty, readable store before introducing a write failure.
+        _ = store.ranked(candidates(["你", "泥"], length: 2), for: "ni")
+        try FileManager.default.createDirectory(at: fixture.root, withIntermediateDirectories: true)
+        let blocker = fixture.file.deletingLastPathComponent()
+        try Data("block writes".utf8).write(to: blocker)
+        try store.record(segments("泥", "ni"))
+        var failed = false
+        do { try store.flush() } catch { failed = true }
+        try requireUsage(failed, "Flush failed to report an impossible asynchronous save")
+        try store.record(segments("泥", "ni"))
+        try store.record(segments("尼", "ni"))
+        try FileManager.default.removeItem(at: blocker)
+        try store.flush()
+        let document = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture.file)) as? [String: Any]
+        let entries = document?["entries"] as? [[String: Any]] ?? []
+        try requireUsage(entries.count == 2 && entries.first { $0["text"] as? String == "泥" }?["count"] as? Int == 2,
+                         "Recovering a failed write lost or replayed committed counts")
+        // A second flush without a new commit must preserve the saved bytes.
+        let saved = try Data(contentsOf: fixture.file)
+        try store.flush()
+        try requireUsage(try Data(contentsOf: fixture.file) == saved, "An obsolete scheduled save replaced the flushed snapshot")
+    }
+
+    private static func inFlightSnapshots() throws {
+        for failFirst in [false, true] {
+            let fixture = UsageFixture()
+            defer { fixture.remove() }
+            let gate = UsageWriteGate(failFirst: failFirst)
+            defer { gate.release.signal() }
+            let store = CandidateUsageStore(fileURL: fixture.file, beforePersistence: gate.beforeWrite)
+            try store.record(segments("泥", "ni"))
+            try requireUsage(gate.entered.wait(timeout: .now() + 3) == .success, "The first write never reached its gate")
+            // The persistence queue is now inside the first write. New submissions
+            // must replace the mailbox snapshot without waiting for that queue.
+            for _ in 0..<19 { try store.record(segments("泥", "ni")) }
+            try store.record(segments("尼", "ni"))
+            gate.release.signal()
+            try store.flush()
+            let document = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture.file)) as? [String: Any]
+            let entries = document?["entries"] as? [[String: Any]] ?? []
+            try requireUsage(entries.count == 2 && entries.first { $0["text"] as? String == "泥" }?["count"] as? Int == 20,
+                             "Finishing an older in-flight snapshot lost newer learning")
+            try requireUsage(gate.count == 2, "Queued commits were not coalesced into one latest snapshot")
+        }
+    }
+
+    private static func automaticRetry() throws {
+        let fixture = UsageFixture()
+        defer { fixture.remove() }
+        let store = CandidateUsageStore(fileURL: fixture.file)
+        _ = store.ranked(candidates(["你", "泥"], length: 2), for: "ni")
+        try FileManager.default.createDirectory(at: fixture.root, withIntermediateDirectories: true)
+        let blocker = fixture.file.deletingLastPathComponent()
+        try Data("block writes".utf8).write(to: blocker)
+        try store.record(segments("泥", "ni"))
+        var failed = false
+        do { try store.flush() } catch { failed = true }
+        try requireUsage(failed, "The retry fixture did not produce a write failure")
+        try FileManager.default.removeItem(at: blocker)
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !FileManager.default.fileExists(atPath: fixture.file.path), ContinuousClock.now < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        try requireUsage(FileManager.default.fileExists(atPath: fixture.file.path), "Pending learning was not retried after filesystem recovery")
+        let restart = CandidateUsageStore(fileURL: fixture.file)
+        try requireUsage(restart.ranked(candidates(["你", "泥"], length: 2), for: "ni").first?.text == "泥",
+                         "Background retry did not preserve the original snapshot")
+        try store.flush()
     }
 
     private static func storageBounds() throws {

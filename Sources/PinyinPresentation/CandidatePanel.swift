@@ -12,6 +12,19 @@ public final class CandidatePanel: CandidatePresenting {
     private var statusID: UUID?
     private var recoveryTask: Task<Void, Never>?
     private var presentationID: UUID?
+    private let partOfSpeechProvider: any TranslationPartOfSpeechProviding
+    private var annotationTask: Task<Void, Never>?
+    private var annotationID: UUID?
+    private struct CandidateContent: Equatable {
+        let rows: [CandidateRow]
+        let pinyin: String
+        let footer: String
+        let language: TranslationLanguage
+        let maximumSize: NSSize
+    }
+    private var candidateContent: CandidateContent?
+    private var annotations: [TranslationPartOfSpeech?] = []
+    private var candidateAnchor: NSRect = .zero
     private let panelFactory: () -> NSPanel
     private let foregroundPID: () -> pid_t?
     private let diagnosticOwner: String
@@ -29,13 +42,15 @@ public final class CandidatePanel: CandidatePresenting {
     package init(anchor: @escaping () -> NSRect = { .zero }, windowLevel: @escaping () -> Int = { 0 },
                  touchBar: (any CandidateTouchBarDisplaying)? = nil,
                  diagnosticOwner: String = UUID().uuidString, panelFactory: @escaping () -> NSPanel,
-                 foregroundPID: @escaping () -> pid_t?) {
+                 foregroundPID: @escaping () -> pid_t?,
+                 partOfSpeechProvider: any TranslationPartOfSpeechProviding = EnglishPartOfSpeech.shared) {
         self.anchor = anchor
         self.windowLevel = windowLevel
         self.touchBar = touchBar
         self.diagnosticOwner = diagnosticOwner
         self.panelFactory = panelFactory
         self.foregroundPID = foregroundPID
+        self.partOfSpeechProvider = partOfSpeechProvider
         panel = panelFactory()
         configurePanel()
     }
@@ -53,6 +68,7 @@ public final class CandidatePanel: CandidatePresenting {
     isolated deinit {
         statusTask?.cancel()
         recoveryTask?.cancel()
+        annotationTask?.cancel()
         touchBar?.hide(owner: touchBarOwner)
     }
 
@@ -62,18 +78,75 @@ public final class CandidatePanel: CandidatePresenting {
         let pageText = "\(translationLanguage.displayName)译文 · 第 \(page + 1)/\(max(1, totalPages)) 页"
         let footer = status.map { pageText + " · " + $0 } ?? pageText
         let bounds = visibleBounds(at: anchor)
-        let view = CandidateView(rows: rows, pinyin: pinyin, highlighted: selected, footer: footer, maximumSize: bounds.size,
-                                 translationLanguage: translationLanguage)
         let previousSelection = (panel.contentView?.accessibilitySelectedChildren()?.first as? NSView)?.accessibilityLabel()
+        let content = CandidateContent(rows: rows, pinyin: pinyin, footer: footer, language: translationLanguage, maximumSize: bounds.size)
+        let contentChanged = candidateContent != content
+        if contentChanged {
+            cancelAnnotations()
+            candidateContent = content
+            annotations = Array(repeating: nil, count: rows.count)
+        }
+        candidateAnchor = anchor
+        let view: CandidateView
+        let reused: Bool
+        if !contentChanged, let current = panel.contentView as? CandidateView, current.updateHighlighted(selected) {
+            view = current
+            reused = true
+        } else {
+            view = makeCandidateView(content, selected: selected)
+            reused = false
+        }
         display(view, size: view.preferredSize, anchor: anchor)
         if rows.indices.contains(selected) {
             touchBar?.show(owner: touchBarOwner, row: rows[selected], language: translationLanguage)
         } else {
             touchBar?.hide(owner: touchBarOwner)
         }
-        NSAccessibility.post(element: panel, notification: .layoutChanged)
+        if !reused { NSAccessibility.post(element: panel, notification: .layoutChanged) }
         let selection = (view.accessibilitySelectedChildren()?.first as? NSView)?.accessibilityLabel()
         if selection != previousSelection { NSAccessibility.post(element: view, notification: .selectedChildrenChanged) }
+        if contentChanged { requestAnnotations(for: content) }
+    }
+
+    private func makeCandidateView(_ content: CandidateContent, selected: Int) -> CandidateView {
+        CandidateView(rows: content.rows, pinyin: content.pinyin, highlighted: selected, footer: content.footer,
+                      maximumSize: content.maximumSize, translationLanguage: content.language, annotations: annotations)
+    }
+
+    private func requestAnnotations(for content: CandidateContent) {
+        guard content.language == .english,
+              content.rows.contains(where: { $0.needsTranslation && $0.speechText != nil }) else { return }
+        let identifier = UUID()
+        annotationID = identifier
+        let provider = partOfSpeechProvider
+        annotationTask = Task { [weak self] in
+            let result = await provider.annotations(for: content.rows, language: content.language)
+            guard !Task.isCancelled, let self, self.annotationID == identifier,
+                  self.candidateContent == content, result.count == content.rows.count,
+                  let previous = self.panel.contentView as? CandidateView else { return }
+            self.annotationTask = nil
+            self.annotationID = nil
+            guard self.annotations != result else { return }
+            self.annotations = result
+            let view = self.makeCandidateView(content, selected: previous.highlighted)
+            view.restoreHighlightedScrollProgress(previous.highlightedScrollProgress)
+            self.display(view, size: view.preferredSize, anchor: self.candidateAnchor)
+            NSAccessibility.post(element: self.panel, notification: .layoutChanged)
+            NSAccessibility.post(element: view, notification: .selectedChildrenChanged)
+        }
+    }
+
+    private func cancelAnnotations() {
+        annotationTask?.cancel()
+        annotationTask = nil
+        annotationID = nil
+        candidateContent = nil
+        annotations = []
+    }
+
+    public func scrollHighlightedCandidate(by pages: Int) -> Bool {
+        guard candidateContent != nil, panel.isVisible else { return false }
+        return (panel.contentView as? CandidateView)?.scrollHighlightedCandidate(by: pages) ?? false
     }
 
     private func visibleBounds(at anchor: NSRect) -> NSRect {
@@ -94,8 +167,9 @@ public final class CandidatePanel: CandidatePresenting {
         let preferred = isStatus ? statusOrigin(size: size, anchor: anchor, bounds: bounds) : NSPoint(x: anchor.minX, y: y)
         let origin = NSPoint(x: min(max(preferred.x, bounds.minX), max(bounds.minX, bounds.maxX - size.width)),
                              y: min(max(preferred.y, bounds.minY), max(bounds.minY, bounds.maxY - size.height)))
-        panel.contentView = view
-        panel.setFrame(NSRect(origin: origin, size: size), display: true)
+        if panel.contentView !== view { panel.contentView = view }
+        let frame = NSRect(origin: origin, size: size)
+        if panel.frame != frame { panel.setFrame(frame, display: true) }
         // A visible composition updates in place; only a hidden panel needs ordering.
         if !panel.isVisible {
             diagnostics.willShow()
@@ -191,6 +265,7 @@ public final class CandidatePanel: CandidatePresenting {
 
     private func showStatus(_ view: InputStatusView) {
         cancelStatus()
+        cancelAnnotations()
         touchBar?.hide(owner: touchBarOwner)
         display(view, size: view.preferredSize, anchor: resolvedAnchor(), isStatus: true)
         NSAccessibility.post(element: view, notification: .announcementRequested, userInfo: [
@@ -208,6 +283,7 @@ public final class CandidatePanel: CandidatePresenting {
 
     public func hide() {
         cancelStatus()
+        cancelAnnotations()
         touchBar?.hide(owner: touchBarOwner)
         presentationID = nil
         recoveryTask?.cancel()
@@ -219,6 +295,7 @@ public final class CandidatePanel: CandidatePresenting {
 
     public func showLoading(pinyin: String) {
         cancelStatus()
+        cancelAnnotations()
         touchBar?.hide(owner: touchBarOwner)
         // Keep the window in place, but never present stale candidates as selectable.
         let anchor = resolvedAnchor()

@@ -19,6 +19,7 @@ final class LanguagePacksModel: ObservableObject {
     @Published private(set) var speechSettingsError: String?
     @Published private(set) var removalSettingsError: String?
     @Published private(set) var preparationSettingsError: String?
+    @Published private(set) var scanError: String?
     @Published private(set) var statuses = Dictionary(
         uniqueKeysWithValues: TranslationLanguage.allCases.map { ($0, PackStatus.unknown) })
     @Published private(set) var isCheckingAll = false
@@ -26,12 +27,18 @@ final class LanguagePacksModel: ObservableObject {
 
     private let readStatus: StatusReader
     private let openSettings: SettingsOpener
+    private let scanTimeout: Duration
     private var scanID: UUID?
     private var scanTask: Task<Void, Never>?
+    private var scanTimeoutTask: Task<Void, Never>?
+    private var scanWaiters: [CheckedContinuation<Void, Never>] = []
+    private var checkedLanguages: Set<TranslationLanguage> = []
 
-    init(statusReader: StatusReader? = nil, settingsOpener: SettingsOpener? = nil) {
+    init(statusReader: StatusReader? = nil, settingsOpener: SettingsOpener? = nil,
+         scanTimeout: Duration = .seconds(15)) {
         readStatus = statusReader ?? Self.systemStatus
         openSettings = settingsOpener ?? { NSWorkspace.shared.open($0) }
+        self.scanTimeout = scanTimeout
         refreshVoice()
     }
 
@@ -112,65 +119,92 @@ final class LanguagePacksModel: ObservableObject {
 
     func checkAvailability() async { await checkAllAvailability() }
 
-    func checkAllAvailability() async {
+    /// Foreground refreshes must read states changed while another scan was running.
+    func checkAllAvailability(restarting: Bool = false) async {
         guard !Task.isCancelled else { return }
-        let ticket: UUID
-        let task: Task<Void, Never>
-        if let currentID = scanID, let currentTask = scanTask {
-            ticket = currentID
-            task = currentTask
-        } else {
-            ticket = UUID()
-            scanID = ticket
-            checkedCount = 0
-            isCheckingAll = true
-            // Keep confirmed states visible while refreshing. Only languages
-            // without a previous result need a temporary checking state.
-            for language in TranslationLanguage.allCases where statuses[language] == .unknown {
-                statuses[language] = .checking
-            }
-            updateTargetPhase()
-            refreshVoice()
-            task = Task { [weak self] in await self?.scanAll(ticket: ticket) }
-            scanTask = task
-        }
+        if restarting { cancelAvailabilityCheck() }
+        let ticket = scanID ?? startScan()
 
         await withTaskCancellationHandler {
-            await task.value
+            // Do not await the reader task itself: system queries may ignore
+            // cancellation. Our lifecycle owns completion of these waiters.
+            await withCheckedContinuation { continuation in
+                guard scanID == ticket, !Task.isCancelled else {
+                    cancelScan(ticket: ticket)
+                    continuation.resume()
+                    return
+                }
+                scanWaiters.append(continuation)
+            }
         } onCancel: { [weak self] in
-            // The system reader need not cooperate with cancellation. Clear
-            // busy independently, and reject its eventual reply by ticket.
             Task { @MainActor in self?.cancelScan(ticket: ticket) }
         }
     }
 
-    private func scanAll(ticket: UUID) async {
-        defer { finishScan(ticket: ticket) }
-        for language in TranslationLanguage.allCases {
-            guard scanID == ticket, !Task.isCancelled else { return }
-            let result = await readStatus(language)
-            guard scanID == ticket, !Task.isCancelled else { return }
-            statuses[language] = result == .checking ? .unknown : result
-            checkedCount += 1
-            updateTargetPhase()
+    func cancelAvailabilityCheck() {
+        if let ticket = scanID { cancelScan(ticket: ticket) }
+    }
+
+    private func startScan() -> UUID {
+        let ticket = UUID()
+        scanID = ticket
+        checkedCount = 0
+        checkedLanguages = []
+        scanError = nil
+        isCheckingAll = true
+        // Keep confirmed states visible while refreshing. Unread states become
+        // unknown if the scan stops early, so stale results cannot enable actions.
+        for language in TranslationLanguage.allCases where statuses[language] == .unknown {
+            statuses[language] = .checking
         }
+        updateTargetPhase()
+        refreshVoice()
+        scanTask = Task { [weak self, readStatus] in
+            for language in TranslationLanguage.allCases {
+                guard self?.scanID == ticket, !Task.isCancelled else { return }
+                let result = await readStatus(language)
+                guard self?.scanID == ticket, !Task.isCancelled else { return }
+                self?.recordStatus(result, for: language)
+            }
+            self?.finishScan(ticket: ticket)
+        }
+        scanTimeoutTask = Task { [weak self, scanTimeout] in
+            do { try await Task.sleep(for: scanTimeout) }
+            catch { return }
+            guard let self, self.scanID == ticket else { return }
+            self.scanError = "检查语言包超时，请重新检查。未完成的项目暂时显示为状态未知。"
+            self.finishScan(ticket: ticket)
+        }
+        return ticket
+    }
+
+    private func recordStatus(_ result: PackStatus, for language: TranslationLanguage) {
+        statuses[language] = result == .checking ? .unknown : result
+        checkedLanguages.insert(language)
+        checkedCount += 1
+        updateTargetPhase()
     }
 
     private func cancelScan(ticket: UUID) {
         guard scanID == ticket else { return }
-        scanTask?.cancel()
         finishScan(ticket: ticket)
     }
 
     private func finishScan(ticket: UUID) {
         guard scanID == ticket else { return }
         scanID = nil
+        scanTask?.cancel()
         scanTask = nil
+        scanTimeoutTask?.cancel()
+        scanTimeoutTask = nil
         isCheckingAll = false
-        for language in TranslationLanguage.allCases where statuses[language] == .checking {
+        for language in TranslationLanguage.allCases where !checkedLanguages.contains(language) {
             statuses[language] = .unknown
         }
         updateTargetPhase()
+        let waiters = scanWaiters
+        scanWaiters = []
+        for waiter in waiters { waiter.resume() }
     }
 
     func prepare() {
@@ -242,7 +276,7 @@ final class LanguagePacksModel: ObservableObject {
     }
 
     private static func systemStatus(for language: TranslationLanguage) async -> PackStatus {
-        let status = await LanguageAvailability().status(
+        let status = await AppleTranslationPolicy.availability().status(
             from: Locale.Language(identifier: "zh-Hans"),
             to: Locale.Language(identifier: language.localeIdentifier))
         switch status {

@@ -41,6 +41,8 @@ struct UsageGuideView: View {
                 GuideRow(keys: "↑ / ↓", description: "移动当前选中候选。", identifier: "guide-shortcut-highlight")
                 Divider()
                 GuideRow(keys: "← / →", description: "上一页 / 下一页，也支持 Page Up / Page Down。首页和末页不循环翻页。", identifier: "guide-shortcut-page")
+                Divider()
+                GuideRow(keys: "Shift + Page Up / Page Down", description: "单条候选或译文过高时，滚动查看全文，保持当前选择。MacBook 可使用 Fn + Shift + ↑ / ↓。", identifier: "guide-shortcut-candidate-scroll")
             }
             SettingsCard(title: "目标语言朗读", symbol: "speaker.wave.2") {
                 Text(model.voiceMessage).font(.headline).accessibilityIdentifier("speech-voice-status")
