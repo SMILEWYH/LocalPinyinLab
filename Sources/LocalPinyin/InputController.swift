@@ -28,6 +28,7 @@ import OSLog
         speaker: LocalSpeechPlayer(),
         presenter: CandidatePanel(anchor: { [weak self] in self?.host?.anchor ?? .zero },
                                   windowLevel: { [weak self] in self?.host?.windowLevel ?? 0 },
+                                  touchBar: CandidateTouchBar.shared,
                                   diagnosticOwner: diagnosticID),
         modeState: InputController.modeState,
         translationLanguage: TranslationPreferences.targetLanguage,

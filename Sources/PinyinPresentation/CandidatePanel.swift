@@ -6,6 +6,8 @@ import PinyinApplication
 public final class CandidatePanel: CandidatePresenting {
     private let anchor: () -> NSRect
     private let windowLevel: () -> Int
+    private let touchBar: (any CandidateTouchBarDisplaying)?
+    private let touchBarOwner = UUID()
     private var statusTask: Task<Void, Never>?
     private var statusID: UUID?
     private var recoveryTask: Task<Void, Never>?
@@ -17,17 +19,20 @@ public final class CandidatePanel: CandidatePresenting {
     package private(set) var panel: NSPanel
 
     public convenience init(anchor: @escaping () -> NSRect = { .zero }, windowLevel: @escaping () -> Int = { 0 },
+                            touchBar: (any CandidateTouchBarDisplaying)? = nil,
                             diagnosticOwner: String = UUID().uuidString) {
-        self.init(anchor: anchor, windowLevel: windowLevel, diagnosticOwner: diagnosticOwner,
+        self.init(anchor: anchor, windowLevel: windowLevel, touchBar: touchBar, diagnosticOwner: diagnosticOwner,
                   panelFactory: { NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false) },
                   foregroundPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier })
     }
 
     package init(anchor: @escaping () -> NSRect = { .zero }, windowLevel: @escaping () -> Int = { 0 },
+                 touchBar: (any CandidateTouchBarDisplaying)? = nil,
                  diagnosticOwner: String = UUID().uuidString, panelFactory: @escaping () -> NSPanel,
                  foregroundPID: @escaping () -> pid_t?) {
         self.anchor = anchor
         self.windowLevel = windowLevel
+        self.touchBar = touchBar
         self.diagnosticOwner = diagnosticOwner
         self.panelFactory = panelFactory
         self.foregroundPID = foregroundPID
@@ -45,7 +50,11 @@ public final class CandidatePanel: CandidatePresenting {
         updateWindowLevel()
     }
 
-    deinit { statusTask?.cancel(); recoveryTask?.cancel() }
+    isolated deinit {
+        statusTask?.cancel()
+        recoveryTask?.cancel()
+        touchBar?.hide(owner: touchBarOwner)
+    }
 
     public func show(rows: [CandidateRow], pinyin: String, selected: Int, page: Int, totalPages: Int, anchor: NSRect, status: String? = nil,
                      translationLanguage: TranslationLanguage = .english) {
@@ -57,6 +66,11 @@ public final class CandidatePanel: CandidatePresenting {
                                  translationLanguage: translationLanguage)
         let previousSelection = (panel.contentView?.accessibilitySelectedChildren()?.first as? NSView)?.accessibilityLabel()
         display(view, size: view.preferredSize, anchor: anchor)
+        if rows.indices.contains(selected) {
+            touchBar?.show(owner: touchBarOwner, row: rows[selected], language: translationLanguage)
+        } else {
+            touchBar?.hide(owner: touchBarOwner)
+        }
         NSAccessibility.post(element: panel, notification: .layoutChanged)
         let selection = (view.accessibilitySelectedChildren()?.first as? NSView)?.accessibilityLabel()
         if selection != previousSelection { NSAccessibility.post(element: view, notification: .selectedChildrenChanged) }
@@ -174,6 +188,7 @@ public final class CandidatePanel: CandidatePresenting {
 
     private func showStatus(_ view: InputStatusView) {
         cancelStatus()
+        touchBar?.hide(owner: touchBarOwner)
         display(view, size: view.preferredSize, anchor: resolvedAnchor(), isStatus: true)
         NSAccessibility.post(element: view, notification: .announcementRequested, userInfo: [
             .announcement: view.message, .priority: NSAccessibilityPriorityLevel.medium.rawValue
@@ -190,6 +205,7 @@ public final class CandidatePanel: CandidatePresenting {
 
     public func hide() {
         cancelStatus()
+        touchBar?.hide(owner: touchBarOwner)
         presentationID = nil
         recoveryTask?.cancel()
         recoveryTask = nil
@@ -200,6 +216,7 @@ public final class CandidatePanel: CandidatePresenting {
 
     public func showLoading(pinyin: String) {
         cancelStatus()
+        touchBar?.hide(owner: touchBarOwner)
         // Keep the window in place, but never present stale candidates as selectable.
         let anchor = resolvedAnchor()
         let previousHeight = panel.isVisible ? (panel.contentView as? CandidateView)?.bounds.height ?? 80 : 80

@@ -10,6 +10,8 @@ struct PresentationChecks {
         checkNativeCapsLockEvents()
         checkCandidateWindowBehavior()
         try await checkCandidateWindowRecovery()
+        try await checkCandidateTouchBarIntegration()
+        try await checkCandidateTouchBarBehavior()
         let translation = "This is a longer English translation used to verify that every candidate wraps automatically and preserves the original Chinese text."
         let longChinese = "我们正在检查较长中文候选和英文译文的显示效果"
         let rows = (0..<9).map { index in
@@ -142,7 +144,7 @@ struct PresentationChecks {
         for (name, view) in scenarios {
             try render(view, name: name, directory: directory)
         }
-        print("Presentation checks passed: Space recovery and cancellation (7 scenarios), host-aware candidate window levels without activation, native Caps Lock override/edge events, content-sized left-aligned columns with 40-point spacing and a 600-point cap, automatic wrapping for every candidate and translation, original row indices, target-language AX state, offscreen rendering (\(scenarios.count) cases).")
+        print("Presentation checks passed: Space recovery and cancellation (7 scenarios), Touch Bar selection updates and owner-scoped lifecycle cleanup, host-aware candidate window levels without activation, native Caps Lock override/edge events, content-sized left-aligned columns with 40-point spacing and a 600-point cap, automatic wrapping for every candidate and translation, original row indices, target-language AX state, offscreen rendering (\(scenarios.count) cases).")
     }
 
     @MainActor private static func checkNativeCapsLockEvents() {
