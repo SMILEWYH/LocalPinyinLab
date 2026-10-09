@@ -8,34 +8,45 @@ public final class CandidateView: NSView {
     private static let annotationFont = NSFont.systemFont(ofSize: 12)
     private static let indexFont = NSFont.systemFont(ofSize: 11)
     private static let padding: CGFloat = 8
-    private static let gap: CGFloat = 8
-    private let size: NSSize
+    private static let indexGap: CGFloat = 8
+    private static let columnGap: CGFloat = 40
+    private static let maximumWidth: CGFloat = 600
+    private var size: NSSize
 
     public override var isFlipped: Bool { true }
     public var preferredSize: NSSize { size }
 
     public init(rows: [CandidateRow], pinyin: String, highlighted: Int, footer: String,
-                maximumSize: NSSize = NSSize(width: 560, height: 700), minimumHeight: CGFloat = 0,
+                maximumSize: NSSize = NSSize(width: 600, height: 700), minimumHeight: CGFloat = 0,
                 translationLanguage: TranslationLanguage = .english) {
         precondition(rows.count <= PinyinRules.pageSize)
-        // Width depends only on the available screen, never on delayed translations.
-        let width = max(1, min(560, maximumSize.width))
+        let widthLimit = max(1, min(Self.maximumWidth, maximumSize.width))
+        let textNaturalWidth = rows.map { Self.width($0.text, font: Self.textFont) }.max() ?? 0
+        let glossNaturalWidth = rows.map { Self.width($0.translationText(for: translationLanguage), font: Self.annotationFont) }.max() ?? 0
+        let rowNaturalWidth = rows.isEmpty ? 0 : 12 + Self.indexGap + textNaturalWidth + Self.columnGap + glossNaturalWidth
+        let naturalWidth = max(rowNaturalWidth, Self.width(pinyin + "│", font: Self.annotationFont),
+                               Self.width(footer, font: Self.indexFont)) + Self.padding * 2
+        let width = min(naturalWidth, widthLimit)
         let maximumHeight = max(1, maximumSize.height)
         let padding = min(Self.padding, width / 12, maximumHeight / 12)
-        let contentWidth = max(1, width - padding * 2)
-        let indexWidth: CGFloat = 12
-        let gap = min(Self.gap, contentWidth / 12)
-        let columnsWidth = max(2, contentWidth - indexWidth - gap * 2)
-        let textWidth = floor(columnsWidth * 0.46)
-        let glossWidth = columnsWidth - textWidth
-        let headerHeight = min(Self.height(pinyin, font: Self.annotationFont, width: contentWidth, lines: 2) + 8,
+        let contentWidth = max(0, width - padding * 2)
+        let indexWidth = min(CGFloat(12), contentWidth / 6)
+        let indexGap = min(Self.indexGap, contentWidth / 12)
+        // Only a screen too narrow for the fixed chrome can reduce the 40-point gap.
+        let columnGap = min(Self.columnGap, max(0, contentWidth - indexWidth - indexGap - 2))
+        let columnsWidth = max(0, contentWidth - indexWidth - indexGap - columnGap)
+        // Keep short columns at natural width. Share constrained space when both
+        // are long, giving any unused translation space back to Chinese text.
+        var textWidth = min(textNaturalWidth, floor(columnsWidth * 0.46))
+        let glossWidth = min(glossNaturalWidth, columnsWidth - textWidth)
+        textWidth = min(textNaturalWidth, columnsWidth - glossWidth)
+        let headerHeight = min(Self.height(pinyin + "│", font: Self.annotationFont, width: contentWidth) + 8,
                                maximumHeight / 3)
         let footerHeight = min(Self.lineHeight(Self.indexFont) + 8, maximumHeight / 4)
         let availableBodyHeight = max(0, maximumHeight - padding * 2 - headerHeight - footerHeight)
-        let rowHeights = rows.enumerated().map { index, row in
-            let lines = index == highlighted ? 3 : 1
-            return max(Self.height(row.text, font: Self.textFont, width: textWidth, lines: lines),
-                       Self.height(row.translationText(for: translationLanguage), font: Self.annotationFont, width: glossWidth, lines: lines)) + 8
+        let rowHeights = rows.map { row in
+            max(Self.height(row.text, font: Self.textFont, width: textWidth),
+                Self.height(row.translationText(for: translationLanguage), font: Self.annotationFont, width: glossWidth)) + 8
         }
         let visible = Self.visibleRows(heights: rowHeights, highlighted: highlighted, availableHeight: availableBodyHeight)
         let minimumBodyHeight = rows.isEmpty ? max(0, minimumHeight - padding * 2 - headerHeight - footerHeight) : 0
@@ -49,7 +60,7 @@ public final class CandidateView: NSView {
         setAccessibilityValue(pinyin + "，" + footer)
         setAccessibilityHelp("上下方向键选择，空格确认，数字键选词，左右方向键翻页。")
 
-        let header = Self.label(pinyin + "│", font: Self.annotationFont, color: NSColor(white: 0.38, alpha: 1), lines: 2)
+        let header = Self.label(pinyin + "│", font: Self.annotationFont, color: NSColor(white: 0.38, alpha: 1), lines: 0)
         header.frame = NSRect(x: padding, y: padding + 4, width: contentWidth, height: max(0, headerHeight - 8))
         header.setAccessibilityLabel("正在输入：" + pinyin)
         addSubview(header)
@@ -67,18 +78,17 @@ public final class CandidateView: NSView {
             rowView.setAccessibilityLabel(row.accessibilityText(index: index, language: translationLanguage))
             rowView.setAccessibilitySelected(selected)
             rowView.setAccessibilityIndex(index)
-            let lines = selected ? 3 : 1
             let number = Self.label(String(index + 1), font: Self.indexFont,
                                     color: selected ? .white : NSColor(white: 0.45, alpha: 1), lines: 1)
             let chinese = Self.label(row.text, font: Self.textFont,
-                                     color: selected ? .white : NSColor(white: 0.12, alpha: 1), lines: lines)
+                                     color: selected ? .white : NSColor(white: 0.12, alpha: 1), lines: 0)
             let gloss = Self.label(row.translationText(for: translationLanguage), font: Self.annotationFont,
-                                   color: selected ? .white : NSColor(white: 0.38, alpha: 1), lines: lines)
-            let textX = padding / 2 + indexWidth + gap
+                                   color: selected ? .white : NSColor(white: 0.38, alpha: 1), lines: 0)
+            let textX = padding / 2 + indexWidth + indexGap
             let contentHeight = max(0, height - 8)
             number.frame = NSRect(x: padding / 2, y: 6, width: indexWidth, height: max(0, height - 10))
             chinese.frame = NSRect(x: textX, y: 4, width: textWidth, height: contentHeight)
-            gloss.frame = NSRect(x: textX + textWidth + gap, y: 4, width: glossWidth, height: contentHeight)
+            gloss.frame = NSRect(x: textX + textWidth + columnGap, y: 4, width: glossWidth, height: contentHeight)
             for label in [number, chinese, gloss] {
                 // Expose one complete candidate row to VoiceOver, including untruncated text.
                 label.setAccessibilityElement(false)
@@ -93,9 +103,17 @@ public final class CandidateView: NSView {
         if !visible.isEmpty, visible.count < rows.count {
             footerText += " · \(visible.lowerBound + 1)–\(visible.upperBound)/\(rows.count) 项 · ↑↓ 查看"
         }
+        // Fit the navigation hint added for short screens without stretching columns.
+        let footerWidth = min(widthLimit, Self.width(footerText, font: Self.indexFont) + padding * 2)
+        if footerWidth > size.width {
+            size.width = footerWidth
+            setFrameSize(size)
+            header.frame.size.width = size.width - padding * 2
+            for row in accessibleRows { row.frame.size.width = size.width - padding }
+        }
         let footerLabel = Self.label(footerText, font: Self.indexFont, color: NSColor(white: 0.4, alpha: 1), lines: 1)
         footerLabel.alignment = .right
-        footerLabel.frame = NSRect(x: padding, y: padding + headerHeight + bodyHeight + 4, width: contentWidth, height: max(0, footerHeight - 8))
+        footerLabel.frame = NSRect(x: padding, y: padding + headerHeight + bodyHeight + 4, width: size.width - padding * 2, height: max(0, footerHeight - 8))
         footerLabel.setAccessibilityLabel(footerText)
         addSubview(footerLabel)
         setAccessibilityChildren([header] + accessibleRows + [footerLabel])
@@ -107,11 +125,12 @@ public final class CandidateView: NSView {
     private static func label(_ text: String, font: NSFont, color: NSColor, lines: Int) -> NSTextField {
         let field = lines == 1 ? NSTextField(labelWithString: text) : NSTextField(wrappingLabelWithString: text)
         field.font = font
+        field.alignment = .left
         field.baseWritingDirection = .natural
         field.textColor = color
         field.maximumNumberOfLines = lines
         field.lineBreakMode = lines == 1 ? .byTruncatingTail : .byWordWrapping
-        field.cell?.truncatesLastVisibleLine = true
+        field.cell?.truncatesLastVisibleLine = lines == 1
         field.setAccessibilityRole(.staticText)
         return field
     }
@@ -120,13 +139,18 @@ public final class CandidateView: NSView {
         ceil(NSLayoutManager().defaultLineHeight(for: font))
     }
 
-    private static func height(_ text: String, font: NSFont, width: CGFloat, lines: Int) -> CGFloat {
-        let lineHeight = lineHeight(font)
-        guard lines > 1, !text.isEmpty else { return lineHeight }
-        let measured = (text as NSString).boundingRect(with: NSSize(width: max(1, width - 4), height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font])
-        // NSTextField cells need a small vertical inset beyond the glyph bounds.
-        return min(lineHeight * CGFloat(lines), max(lineHeight, ceil(measured.height))) + 4
+    private static func width(_ text: String, font: NSFont) -> CGFloat {
+        let field = label(text, font: font, color: .labelColor, lines: 0)
+        return max(1, ceil(field.cell?.cellSize.width ?? 0))
+    }
+
+    private static func height(_ text: String, font: NSFont, width: CGFloat) -> CGFloat {
+        // Measure the same wrapping cell used to draw, including explicit line
+        // breaks and long tokens. Glyph bounds alone can undercount wrapped lines.
+        let field = label(text, font: font, color: .labelColor, lines: 0)
+        let bounds = NSRect(x: 0, y: 0, width: max(1, width), height: .greatestFiniteMagnitude)
+        let measured = field.cell?.cellSize(forBounds: bounds).height ?? lineHeight(font)
+        return max(lineHeight(font), ceil(measured))
     }
 
     private static func visibleRows(heights: [CGFloat], highlighted: Int, availableHeight: CGFloat) -> Range<Int> {
