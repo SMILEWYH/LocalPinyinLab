@@ -12,6 +12,34 @@ extension PresentationChecks {
         try await changingForegroundCancelsRecovery()
         try await recoveryDoesNotRepeatItself()
         try await recoveredStatusStillExpires()
+        try await updatesReuseVisibleWindow()
+    }
+
+    @MainActor private static func updatesReuseVisibleWindow() async throws {
+        let fixture = RecoveryFixture(initialSpace: true)
+        defer { fixture.presenter.hide() }
+        fixture.presenter.showLoading(pinyin: "n")
+        let panel = fixture.presenter.panel as! RecoveryPanel
+        precondition(panel.isVisible && panel.orderFrontCalls == 1,
+                     "the first keystroke must show the candidate window once")
+        fixture.showCandidates()
+        let candidateSize = panel.frame.size
+        fixture.presenter.showLoading(pinyin: "nihaom")
+        precondition(panel.frame.size == candidateSize,
+                     "querying the next spelling must preserve the candidate window's width and height")
+        precondition(panel.contentView?.accessibilityValue() as? String == "nihaom，查询中…" &&
+                     panel.contentView?.accessibilitySelectedChildren()?.isEmpty == true,
+                     "loading must update the spelling and remove stale selectable candidates")
+        fixture.showCandidates()
+        fixture.showCandidates()
+        try await Task.sleep(for: .milliseconds(300))
+        precondition(fixture.environment.panels.count == 1 && fixture.presenter.panel === panel &&
+                     panel.isVisible && panel.orderFrontCalls == 1 && panel.orderOutCalls == 0,
+                     "typing and candidate updates must reuse the visible window without ordering it again")
+        fixture.presenter.hide()
+        fixture.presenter.showLoading(pinyin: "h")
+        precondition(fixture.presenter.panel === panel && panel.isVisible && panel.orderFrontCalls == 2,
+                     "a new composition after hiding must show the existing window again")
     }
 
     @MainActor private static func recoveryPreservesPresentation() async throws {

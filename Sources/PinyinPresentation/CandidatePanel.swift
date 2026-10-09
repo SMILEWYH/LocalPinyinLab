@@ -96,9 +96,12 @@ public final class CandidatePanel: CandidatePresenting {
                              y: min(max(preferred.y, bounds.minY), max(bounds.minY, bounds.maxY - size.height)))
         panel.contentView = view
         panel.setFrame(NSRect(origin: origin, size: size), display: true)
-        diagnostics.willShow()
-        panel.orderFrontRegardless()
-        diagnostics.didShow()
+        // A visible composition updates in place; only a hidden panel needs ordering.
+        if !panel.isVisible {
+            diagnostics.willShow()
+            panel.orderFrontRegardless()
+            diagnostics.didShow()
+        }
         scheduleWindowRecovery(for: identifier)
     }
 
@@ -219,9 +222,10 @@ public final class CandidatePanel: CandidatePresenting {
         touchBar?.hide(owner: touchBarOwner)
         // Keep the window in place, but never present stale candidates as selectable.
         let anchor = resolvedAnchor()
-        let previousHeight = panel.isVisible ? (panel.contentView as? CandidateView)?.bounds.height ?? 80 : 80
+        let previousSize = panel.isVisible ? (panel.contentView as? CandidateView)?.bounds.size : nil
         let view = CandidateView(rows: [], pinyin: pinyin, highlighted: -1, footer: "查询中…",
-                                 maximumSize: visibleBounds(at: anchor).size, minimumHeight: previousHeight)
+                                 maximumSize: visibleBounds(at: anchor).size, minimumHeight: previousSize?.height ?? 80,
+                                 minimumWidth: previousSize?.width ?? 0)
         display(view, size: view.preferredSize, anchor: anchor)
         NSAccessibility.post(element: panel, notification: .layoutChanged)
     }

@@ -144,7 +144,7 @@ struct PresentationChecks {
         for (name, view) in scenarios {
             try render(view, name: name, directory: directory)
         }
-        print("Presentation checks passed: Space recovery and cancellation (7 scenarios), Touch Bar selection updates and owner-scoped lifecycle cleanup, host-aware candidate window levels without activation, native Caps Lock override/edge events, content-sized left-aligned columns with 40-point spacing and a 600-point cap, automatic wrapping for every candidate and translation, original row indices, target-language AX state, offscreen rendering (\(scenarios.count) cases).")
+        print("Presentation checks passed: Space recovery, cancellation and visible window reuse (8 scenarios), Touch Bar selection updates and owner-scoped lifecycle cleanup, host-aware candidate window levels without activation, native Caps Lock override/edge events, content-sized left-aligned columns with 40-point spacing and a 600-point cap, automatic wrapping for every candidate and translation, original row indices, target-language AX state, offscreen rendering (\(scenarios.count) cases).")
     }
 
     @MainActor private static func checkNativeCapsLockEvents() {

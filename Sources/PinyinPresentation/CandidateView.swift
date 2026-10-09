@@ -17,7 +17,7 @@ public final class CandidateView: NSView {
     public var preferredSize: NSSize { size }
 
     public init(rows: [CandidateRow], pinyin: String, highlighted: Int, footer: String,
-                maximumSize: NSSize = NSSize(width: 600, height: 700), minimumHeight: CGFloat = 0,
+                maximumSize: NSSize = NSSize(width: 600, height: 700), minimumHeight: CGFloat = 0, minimumWidth: CGFloat = 0,
                 translationLanguage: TranslationLanguage = .english) {
         precondition(rows.count <= PinyinRules.pageSize)
         let widthLimit = max(1, min(Self.maximumWidth, maximumSize.width))
@@ -26,7 +26,7 @@ public final class CandidateView: NSView {
         let rowNaturalWidth = rows.isEmpty ? 0 : 12 + Self.indexGap + textNaturalWidth + Self.columnGap + glossNaturalWidth
         let naturalWidth = max(rowNaturalWidth, Self.width(pinyin + "│", font: Self.annotationFont),
                                Self.width(footer, font: Self.indexFont)) + Self.padding * 2
-        let width = min(naturalWidth, widthLimit)
+        let width = min(max(naturalWidth, minimumWidth), widthLimit)
         let maximumHeight = max(1, maximumSize.height)
         let padding = min(Self.padding, width / 12, maximumHeight / 12)
         let contentWidth = max(0, width - padding * 2)
